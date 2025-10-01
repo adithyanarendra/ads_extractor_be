@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
 from .database import engine, Base
 from .routers import users, invoices
 
@@ -11,6 +13,7 @@ origins = [
     "http://127.0.0.1:5173",
     "http://localhost:3000",  # React default dev server
     "http://127.0.0.1:3000",
+    "https://ads-extractor-fe.onrender.com",
 ]
 
 app.add_middleware(
@@ -23,6 +26,22 @@ app.add_middleware(
 
 app.include_router(users.router)
 app.include_router(invoices.router)
+
+
+@app.get("/")
+async def api_home():
+    return JSONResponse(
+        content={
+            "message": "ADS Extractor - API Home",
+        }
+    )
+
+
+@app.get("/health")
+async def health_check():
+    return JSONResponse(content={"ok": True})
+
+
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
