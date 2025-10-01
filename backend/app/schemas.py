@@ -1,0 +1,47 @@
+from pydantic import BaseModel, EmailStr
+from typing import Optional, Dict, List
+
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+class InvoiceBase(BaseModel):
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
+    vendor_name: Optional[str] = None
+    trn_vat_number: Optional[str] = None
+    before_tax_amount: Optional[str] = None
+    tax_amount: Optional[str] = None
+    total: Optional[str] = None
+    reviewed: Optional[bool] = False
+
+
+class InvoiceOut(InvoiceBase):
+    id: int
+    file_path: str
+
+
+class InvoiceListResponse(BaseModel):
+    ok: bool
+    invoices: List[InvoiceOut]
+
+    class Config:
+        orm_mode = True
+
+
+class ReviewPayload(BaseModel):
+    invoice_id: int
+    reviewed: bool
+    corrected_fields: Optional[Dict[str, Optional[str]]] = None
