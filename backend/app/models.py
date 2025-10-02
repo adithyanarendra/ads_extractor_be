@@ -1,6 +1,9 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
-from .database import Base
+from sqlalchemy.sql import func
+
+from app.database import Base
+
 
 class User(Base):
     __tablename__ = "users"
@@ -8,8 +11,24 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
+    is_admin = Column(Boolean, default=False)
 
-    invoices = relationship("Invoice", back_populates="owner", cascade="all, delete-orphan")
+    # Audit fields
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    last_updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    last_updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    invoices = relationship(
+        "Invoice", back_populates="owner", cascade="all, delete-orphan"
+    )
+
 
 class Invoice(Base):
     __tablename__ = "invoices"
