@@ -1,11 +1,12 @@
 import shutil
 import os
 from uuid import uuid4
-import httpx
 import mimetypes
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from urllib.parse import urlparse
+
 
 from .. import models, schemas, auth, crud
 from ..database import get_db
