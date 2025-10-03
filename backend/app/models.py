@@ -33,7 +33,7 @@ class User(Base):
 class Invoice(Base):
     __tablename__ = "invoices"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     file_path = Column(String, nullable=False)
     invoice_number = Column(String, nullable=True)
     invoice_date = Column(String, nullable=True)

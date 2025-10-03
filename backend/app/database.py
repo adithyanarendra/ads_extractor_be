@@ -9,8 +9,8 @@ load_dotenv()
 SUPABASE_DB_PASS_RAW = os.getenv("SUPABASE_DB_PASS")
 SUPABASE_DB_PASS = urllib.parse.quote_plus(SUPABASE_DB_PASS_RAW)
 
-DB_USER = "postgres"
-DB_HOST = "db.cehisscgqmcllzejlruz.supabase.co"
+DB_USER = "postgres.cehisscgqmcllzejlruz"
+DB_HOST = "aws-1-ap-southeast-1.pooler.supabase.com"
 DB_PORT = 5432
 DB_NAME = "postgres"
 
@@ -19,7 +19,13 @@ DATABASE_URL = (
 )
 
 
-engine = create_async_engine(DATABASE_URL, echo=False, future=True)
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    future=True,
+    pool_size=10,
+    max_overflow=20,
+)
 SessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
