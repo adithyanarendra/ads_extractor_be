@@ -2,11 +2,17 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from pydantic import BaseModel
+
 
 from app import models, schemas, auth, crud
 from app.database import get_db
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+class ChangeUserTypeRequest(BaseModel):
+    is_admin: bool
 
 
 @router.post("/signup", status_code=201)
@@ -130,11 +136,11 @@ async def delete_admin_account(
 @router.put("/change_type/{user_id}")
 async def change_user_type(
     user_id: int,
-    is_admin: bool,
+    payload: ChangeUserTypeRequest,
     db: AsyncSession = Depends(get_db),
     current_admin=Depends(auth.get_current_admin),
 ):
-    user = await crud.change_user_type(db, user_id, is_admin, current_admin.id)
+    user = await crud.change_user_type(db, user_id, payload.is_admin, current_admin.id)
     if not user:
         return {"ok": False, "error": "User not found"}
-    return {"ok": True, "msg": f"User {user.email} updated to admin={is_admin}"}
+    return {"ok": True, "msg": f"User {user.email} updated to admin={payload.is_admin}"}
