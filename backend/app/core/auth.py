@@ -5,8 +5,11 @@ from fastapi import HTTPException, Depends
 from fastapi.security import OAuth2PasswordBearer
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.database import get_db
-from app import crud, models
+from sqlalchemy.future import select
+from .database import get_db
+from app.api.users import models as user_models
+from app.api.users import crud as users_crud
+
 
 SECRET_KEY = "SUPER_SECRET_KEY_CHANGE_ME"  # change for production
 ALGORITHM = "HS256"
@@ -38,18 +41,41 @@ def decode_token(token: str) -> str:
 
 async def get_current_user(
     db: AsyncSession = Depends(get_db), token: str = Depends(oauth2_scheme)
-) -> models.User:
+) -> user_models.User:
     payload = decode_token(token)
     email = payload["email"]
-    user = await crud.get_user_by_email(db, email)
+    user = await users_crud.get_user_by_email(db, email)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
 
+async def get_current_user_from_token(token: str, db: AsyncSession) -> user_models.User:
+    """
+    Used for cases like /signup where we might optionally have a token
+    (e.g., admin creating another user).
+    """
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+
+        result = await db.execute(
+            select(user_models.User).where(user_models.User.email == email)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        return user
+
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+
 async def get_current_admin(
-    current_user: models.User = Depends(get_current_user),
-) -> models.User:
+    current_user: user_models.User = Depends(get_current_user),
+) -> user_models.User:
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin only")
     return current_user

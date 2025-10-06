@@ -1,5 +1,5 @@
 import boto3
-from app.config import (
+from app.core.config import (
     R2_BUCKET,
     R2_ENDPOINT,
     R2_ACCESS_KEY,

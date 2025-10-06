@@ -3,8 +3,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .database import engine, Base
-from .routers import users, invoices
+from .core.database import engine, Base
+from .api.users import routes as users_routes
+from .api.invoices import routes as invoices_routes
+from .api.companies import routes as companies_routes
 
 app = FastAPI(title="FastAPI Invoice OCR")
 
@@ -24,8 +26,9 @@ app.add_middleware(
     allow_headers=["*"],  # Allow all headers
 )
 
-app.include_router(users.router)
-app.include_router(invoices.router)
+app.include_router(users_routes.router)
+app.include_router(invoices_routes.router)
+app.include_router(companies_routes.router)
 
 
 @app.get("/")
