@@ -3,6 +3,7 @@ import mimetypes
 from dotenv import load_dotenv
 from google.cloud import documentai
 from typing import Dict, Optional
+import re
 
 load_dotenv()
 
@@ -16,6 +17,7 @@ TRN_VAT_KEYWORDS = [
     "trn number",
     "trn no",
     "trn",
+    "trn #",
     "tax registration number",
     "supplier tax registration number",
     "supplier tax id",
@@ -26,6 +28,17 @@ TRN_VAT_KEYWORDS = [
     "customer registration number",
     "customer registration no",
 ]
+
+BEFORE_TAX_KEYWORDS = [
+    "subtotal",
+    "amount before tax",
+    "before tax",
+    "net amount",
+    "net total",
+]
+
+TAX_AMOUNT_KEYWORDS = ["tax", "vat", "gst", "tax amount", "vat amount", "gst amount"]
+
 
 TAX_INVOICE_KEYWORDS = ["tax invoice"]
 
@@ -48,8 +61,38 @@ def get_token_text(token, full_text: str) -> str:
     return text
 
 
+def clean_number(text: str) -> Optional[str]:
+    """Keep only digits, dot, comma; remove spaces/currency symbols."""
+    if not text:
+        return None
+    match = re.findall(r"[\d,.]+", text.replace(" ", ""))
+    if match:
+        return match[0].replace(",", "")
+    return None
+
+
+def extract_number_after_keyword(tokens, keywords, window=3):
+    """Look for numeric value after keyword tokens."""
+    for i, t in enumerate(tokens):
+        text = t["text"].lower()
+        if any(kw in text for kw in keywords):
+            # Look next few tokens
+            collected = []
+            for j in range(1, window + 1):
+                if i + j >= len(tokens):
+                    break
+                next_text = tokens[i + j]["text"].strip()
+                if next_text in [":", "#"]:
+                    continue
+                if re.search(r"\d", next_text):
+                    collected.append(next_text)
+            if collected:
+                # Join numbers in case TRN or amount is split into multiple tokens
+                return clean_number("".join(collected))
+    return None
+
+
 def process_invoice(file_path: str) -> Dict[str, Optional[str]]:
-    """Use Google Document AI to process invoice."""
     client = documentai.DocumentProcessorServiceClient()
     name = client.processor_path(PROJECT_ID, LOCATION, PROCESSOR_ID)
 
@@ -67,9 +110,9 @@ def process_invoice(file_path: str) -> Dict[str, Optional[str]]:
     with open(file_path, "rb") as f:
         raw_document = documentai.RawDocument(content=f.read(), mime_type=mime_type)
 
-    request = documentai.ProcessRequest(name=name, raw_document=raw_document)
-    result = client.process_document(request=request)
-
+    result = client.process_document(
+        request=documentai.ProcessRequest(name=name, raw_document=raw_document)
+    )
     doc = result.document
 
     fields = {
@@ -81,101 +124,68 @@ def process_invoice(file_path: str) -> Dict[str, Optional[str]]:
         "tax_amount": None,
         "total": None,
         "other_fields": {},
-        "all_tokens": [],
+        "all_tokens": [],  # keep for reference/debugging
     }
 
+    # Collect tokens
+    tokens = []
     for page_index, page in enumerate(doc.pages):
         for token_index, token in enumerate(page.tokens):
             token_text = get_token_text(token, doc.text)
             confidence = token.layout.confidence if token.layout.confidence else 0.0
-            bounding_box = (
-                [
-                    {"x": vertex.x, "y": vertex.y}
-                    for vertex in token.layout.bounding_poly.vertices
-                ]
-                if token.layout.bounding_poly
-                else None
-            )
-            fields["all_tokens"].append(
+            tokens.append(
                 {
                     "text": token_text,
                     "confidence": confidence,
                     "page": page_index + 1,
                     "token_index": token_index,
-                    "entity_type": getattr(token, "type_", None),
-                    "bounding_box": bounding_box,
                 }
             )
+            fields["all_tokens"].append({"text": token_text, "confidence": confidence})
 
-    is_tax_invoice = any(
-        contains_keyword(entity.mention_text or "", TAX_INVOICE_KEYWORDS)
-        for entity in doc.entities
-    )
-
-    # Process entities
+    # --- Entity-based extraction ---
     for entity in doc.entities:
         etype = entity.type_
         val = entity.mention_text.strip() if entity.mention_text else None
-        val_lower = val.lower() if val else ""
 
-        # TRN/VAT detection
         if etype in ("vat_tax_id", "tax_id", "registration_id"):
             fields["trn_vat_number"] = val
-        elif val_lower and contains_keyword(val_lower, TRN_VAT_KEYWORDS):
-            fields["trn_vat_number"] = val
-        elif etype.lower() in [
-            "supplier_tax_id",
-            "supplier_taxnumber",
-            "supplier_tax_number",
-        ]:
-            fields["trn_vat_number"] = val
-
-        # Standard fields
         elif etype == "supplier_name":
             fields["vendor_name"] = val
         elif etype == "invoice_id":
             fields["invoice_number"] = val
         elif etype == "invoice_date":
             fields["invoice_date"] = val
-        elif is_tax_invoice:
-            if etype in ("subtotal", "amount_before_tax", "total_before_tax"):
-                fields["before_tax_amount"] = val
-            elif etype in ("total_tax_amount", "tax_amount"):
-                fields["tax_amount"] = val
-            elif etype in ("total_amount", "grand_total", "amount_due"):
-                fields["total"] = val
+        elif etype in ("subtotal", "amount_before_tax", "total_before_tax"):
+            fields["before_tax_amount"] = clean_number(val)
+        elif etype in ("total_tax_amount", "tax_amount"):
+            fields["tax_amount"] = clean_number(val)
+        elif etype in ("total_amount", "grand_total", "amount_due"):
+            fields["total"] = clean_number(val)
         else:
-            if etype in ("total_amount", "grand_total", "amount_due"):
-                fields["total"] = val
+            if val:
+                fields["other_fields"][etype] = val
 
-        # Capture all other fields
-        if etype not in [
-            "supplier_name",
-            "invoice_id",
-            "invoice_date",
-            "vat_tax_id",
-            "tax_id",
-            "registration_id",
-            "subtotal",
-            "amount_before_tax",
-            "total_before_tax",
-            "total_tax_amount",
-            "tax_amount",
-            "total_amount",
-            "grand_total",
-            "amount_due",
-        ]:
-            fields["other_fields"][etype] = val
+    # --- Token-based fallback for better accuracy ---
+    if not fields["trn_vat_number"]:
+        fields["trn_vat_number"] = extract_number_after_keyword(
+            tokens, TRN_VAT_KEYWORDS
+        )
 
-    if is_tax_invoice and not fields["before_tax_amount"]:
+    if not fields["before_tax_amount"]:
+        fields["before_tax_amount"] = extract_number_after_keyword(
+            tokens, BEFORE_TAX_KEYWORDS
+        )
+
+    if not fields["tax_amount"]:
+        fields["tax_amount"] = extract_number_after_keyword(tokens, TAX_AMOUNT_KEYWORDS)
+
+    # Compute missing before_tax if total & tax are available
+    if fields["total"] and fields["tax_amount"] and not fields["before_tax_amount"]:
         try:
-            if fields["tax_amount"] and fields["total"]:
-                before_tax = float(fields["total"].replace(",", "")) - float(
-                    fields["tax_amount"].replace(",", "")
-                )
-                fields["before_tax_amount"] = str(before_tax)
-            elif fields["total"]:
-                fields["before_tax_amount"] = fields["total"]
+            fields["before_tax_amount"] = str(
+                float(fields["total"]) - float(fields["tax_amount"])
+            )
         except Exception:
             pass
 
