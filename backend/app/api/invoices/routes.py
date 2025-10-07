@@ -9,7 +9,6 @@ from urllib.parse import urlparse
 
 
 from app.core import auth
-from ..users import schemas as users_schemas
 from ..users import models as users_models
 from ..users import crud as users_crud
 from . import schemas as invoices_schemas
@@ -141,6 +140,23 @@ async def to_be_reviewed(
     return invoices
 
 
+@router.post("/edit/{invoice_id}")
+async def edit_invoice(
+    invoice_id: int,
+    payload: invoices_schemas.EditInvoiceFields,
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    invoice = await invoices_crud.edit_invoice(
+        db, invoice_id, current_user.id, payload.corrected_fields
+    )
+    if not invoice:
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "msg": "Invoice not found"}
+        )
+    return {"ok": True, "msg": "Invoice updated", "invoice_id": invoice.id}
+
+
 @router.get("/{invoice_id}", response_model=invoices_schemas.InvoiceOut)
 async def get_invoice(
     invoice_id: int,
@@ -150,7 +166,7 @@ async def get_invoice(
     invoice = await invoices_crud.get_invoice_by_id_and_owner(
         db, invoice_id, current_user.id
     )
-    if not invoice or invoice.reviewed:
+    if not invoice:
         raise HTTPException(
             status_code=404, detail="Invoice not found or already reviewed"
         )

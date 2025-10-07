@@ -11,6 +11,7 @@ class InvoiceBase(BaseModel):
     tax_amount: Optional[str] = None
     total: Optional[str] = None
     reviewed: Optional[bool] = False
+    remarks: Optional[str] = None
 
 
 class InvoiceOut(InvoiceBase):
@@ -30,3 +31,7 @@ class ReviewPayload(BaseModel):
     invoice_id: int
     reviewed: bool
     corrected_fields: Optional[Dict[str, Optional[str]]] = None
+
+
+class EditInvoiceFields(BaseModel):
+    corrected_fields: Dict[str, Optional[str]]

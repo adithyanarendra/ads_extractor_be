@@ -18,6 +18,7 @@ async def create_invoice(
         before_tax_amount=fields.get("before_tax_amount"),
         tax_amount=fields.get("tax_amount"),
         total=fields.get("total"),
+        remarks=fields.get("remarks"),
         reviewed=False,
     )
     db.add(inv)
@@ -69,7 +70,6 @@ async def update_invoice_review(
         return None
     invoice.reviewed = reviewed
     if corrected_fields:
-        # Only update the allowed fields if present
         allowed = {
             "invoice_number",
             "invoice_date",
@@ -78,10 +78,40 @@ async def update_invoice_review(
             "before_tax_amount",
             "tax_amount",
             "total",
+            "remarks",
         }
         for k, v in corrected_fields.items():
             if k in allowed:
                 setattr(invoice, k, v)
+    await db.commit()
+    await db.refresh(invoice)
+    return invoice
+
+
+async def edit_invoice(
+    db: AsyncSession,
+    invoice_id: int,
+    owner_id: int,
+    corrected_fields: Dict[str, Optional[str]],
+):
+    invoice = await get_invoice_by_id_and_owner(db, invoice_id, owner_id)
+    if not invoice:
+        return None
+
+    allowed = {
+        "invoice_number",
+        "invoice_date",
+        "vendor_name",
+        "trn_vat_number",
+        "before_tax_amount",
+        "tax_amount",
+        "total",
+        "remarks",
+    }
+    for k, v in corrected_fields.items():
+        if k in allowed:
+            setattr(invoice, k, v)
+
     await db.commit()
     await db.refresh(invoice)
     return invoice

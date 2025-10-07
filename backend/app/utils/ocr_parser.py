@@ -124,10 +124,9 @@ def process_invoice(file_path: str) -> Dict[str, Optional[str]]:
         "tax_amount": None,
         "total": None,
         "other_fields": {},
-        "all_tokens": [],  # keep for reference/debugging
+        "all_tokens": [],
     }
 
-    # Collect tokens
     tokens = []
     for page_index, page in enumerate(doc.pages):
         for token_index, token in enumerate(page.tokens):

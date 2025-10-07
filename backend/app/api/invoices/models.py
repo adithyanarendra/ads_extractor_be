@@ -18,6 +18,7 @@ class Invoice(Base):
     tax_amount = Column(String, nullable=True)
     total = Column(String, nullable=True)
     reviewed = Column(Boolean, default=False)
+    remarks = Column(String, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     owner = relationship("User", back_populates="invoices")
