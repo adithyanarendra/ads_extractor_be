@@ -4,6 +4,13 @@ from dotenv import load_dotenv
 from google.cloud import documentai
 from typing import Dict, Optional
 import re
+from dateutil import parser as date_parser
+
+
+import cv2
+import numpy as np
+import io
+from PIL import Image
 
 load_dotenv()
 
@@ -12,6 +19,8 @@ print("Loaded credentials from:", os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
 PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 LOCATION = os.getenv("GCP_LOCATION")
 PROCESSOR_ID = os.getenv("GCP_PROCESSOR_ID")
+
+client = documentai.DocumentProcessorServiceClient()
 
 TRN_VAT_KEYWORDS = [
     "trn number",
@@ -42,6 +51,64 @@ TAX_AMOUNT_KEYWORDS = ["tax", "vat", "gst", "tax amount", "vat amount", "gst amo
 
 TAX_INVOICE_KEYWORDS = ["tax invoice"]
 
+TOTAL_KEYWORDS = [
+    "total",
+    "payable",
+    "net total",
+    "receivable",
+    "owed",
+    "amount due",
+]
+
+DATE_KEYWORDS = [
+    "invoice date",
+    "date",
+    "bill date",
+    "issue date",
+]
+
+
+MONTHS = {
+    "jan": "01",
+    "feb": "02",
+    "mar": "03",
+    "apr": "04",
+    "may": "05",
+    "jun": "06",
+    "jul": "07",
+    "aug": "08",
+    "sep": "09",
+    "sept": "09",
+    "oct": "10",
+    "nov": "11",
+    "dec": "12",
+}
+
+
+def normalize_date(date_str: str) -> Optional[str]:
+    """Convert any date string to DD-MM-YYYY format, including '20-aug-2025' style."""
+    if not date_str:
+        return None
+    try:
+        s = date_str.lower().strip()
+        # replace month abbreviations with numbers
+        for k, v in MONTHS.items():
+            s = re.sub(rf"\b{k}\b", v, s)
+        dt = date_parser.parse(s, dayfirst=True, fuzzy=True)
+        return dt.strftime("%d-%m-%Y")
+    except Exception:
+        return None
+
+
+def clean_number(text: str) -> Optional[str]:
+    """Keep only digits, dot, comma; remove spaces/currency symbols."""
+    if not text:
+        return None
+    match = re.findall(r"[\d,.]+", text.replace(" ", ""))
+    if match:
+        return match[0].replace(",", "")
+    return None
+
 
 def contains_keyword(text: str, keywords: list) -> bool:
     text = text.lower()
@@ -61,13 +128,39 @@ def get_token_text(token, full_text: str) -> str:
     return text
 
 
-def clean_number(text: str) -> Optional[str]:
-    """Keep only digits, dot, comma; remove spaces/currency symbols."""
-    if not text:
-        return None
-    match = re.findall(r"[\d,.]+", text.replace(" ", ""))
-    if match:
-        return match[0].replace(",", "")
+def extract_date_after_keyword(tokens, keywords, window=3) -> Optional[str]:
+    """Look for date string after keywords and normalize it."""
+    for i, t in enumerate(tokens):
+        text = t["text"].lower()
+        if any(kw in text for kw in keywords):
+            for j in range(1, window + 1):
+                if i + j >= len(tokens):
+                    break
+                next_text = tokens[i + j]["text"].strip()
+                if next_text in [":", "#"]:
+                    continue
+                try_date = normalize_date(next_text)
+                if try_date:
+                    return try_date
+    return None
+
+
+def extract_total_amount(tokens, keywords, window=3) -> Optional[str]:
+    """Extract numeric value after total-related keywords."""
+    for i, t in enumerate(tokens):
+        text = t["text"].lower()
+        if any(kw in text for kw in keywords):
+            collected = []
+            for j in range(1, window + 1):
+                if i + j >= len(tokens):
+                    break
+                next_text = tokens[i + j]["text"].strip()
+                if next_text in [":", "#"]:
+                    continue
+                if re.search(r"\d", next_text):
+                    collected.append(next_text)
+            if collected:
+                return clean_number("".join(collected))
     return None
 
 
@@ -92,9 +185,7 @@ def extract_number_after_keyword(tokens, keywords, window=3):
     return None
 
 
-client = documentai.DocumentProcessorServiceClient()
-
-
+# TO-DO deprecate this
 def process_invoice(file_path: str) -> Dict[str, Optional[str]]:
     name = client.processor_path(PROJECT_ID, LOCATION, PROCESSOR_ID)
 
@@ -193,6 +284,76 @@ def process_invoice(file_path: str) -> Dict[str, Optional[str]]:
     return fields
 
 
+def preprocess_image_bytes(file_bytes: bytes) -> bytes:
+    """Enhance image quality for better OCR results."""
+    # Convert bytes to numpy array
+    nparr = np.frombuffer(file_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    # Convert to grayscale
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Increase contrast using CLAHE
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+
+    # Optional: denoise
+    gray = cv2.fastNlMeansDenoising(gray, None, 30, 7, 21)
+
+    # Optional: thresholding
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Optional: deskew
+    coords = np.column_stack(np.where(thresh > 0))
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle < -45:
+        angle = -(90 + angle)
+    else:
+        angle = -angle
+    (h, w) = thresh.shape
+    M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
+    rotated = cv2.warpAffine(
+        thresh, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+    )
+
+    # Convert back to bytes
+    is_success, buffer = cv2.imencode(".png", rotated)
+    return buffer.tobytes()
+
+
+def fix_tax_amount(fields: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
+    """
+    Fix tax and before-tax amounts:
+    - Recalc tax if missing, negative, greater than total,
+    or not 5% of total (with small tolerance for floating point).
+    - Tax = 5% of total when recalculated.
+    - Before-tax = total - tax.
+    - Always round to 2 decimal places.
+    """
+    try:
+        total = float(fields["total"]) if fields["total"] else None
+        if not total:
+            return fields  # cannot compute without total
+
+        tax = float(fields["tax_amount"]) if fields["tax_amount"] else None
+        expected_tax = round(total * 0.05, 2)
+
+        # Recalculate tax if missing, negative, greater than total, or not equal to 5%
+        if tax is None or tax < 0 or tax > total or round(tax, 2) != expected_tax:
+            tax = expected_tax
+
+        before_tax = round(total - tax, 2)
+
+        # Store as string with 2 decimal places
+        fields["tax_amount"] = f"{tax:.2f}"
+        fields["before_tax_amount"] = f"{before_tax:.2f}"
+
+    except Exception:
+        pass
+
+    return fields
+
+
 def parse_document_fields(doc: documentai.Document) -> Dict[str, Optional[str]]:
     """Extract fields and tokens from the processed document."""
     fields = {
@@ -234,7 +395,7 @@ def parse_document_fields(doc: documentai.Document) -> Dict[str, Optional[str]]:
         elif etype == "invoice_id":
             fields["invoice_number"] = val
         elif etype == "invoice_date":
-            fields["invoice_date"] = val
+            fields["invoice_date"] = normalize_date(val)
         elif etype in ("subtotal", "amount_before_tax", "total_before_tax"):
             fields["before_tax_amount"] = clean_number(val)
         elif etype in ("total_tax_amount", "tax_amount"):
@@ -259,6 +420,28 @@ def parse_document_fields(doc: documentai.Document) -> Dict[str, Optional[str]]:
     if not fields["tax_amount"]:
         fields["tax_amount"] = extract_number_after_keyword(tokens, TAX_AMOUNT_KEYWORDS)
 
+    if not fields["invoice_date"]:
+        date_str = extract_date_after_keyword(tokens, DATE_KEYWORDS)
+        fields["invoice_date"] = normalize_date(date_str)
+
+    if not fields["total"]:
+        fields["total"] = extract_total_amount(tokens, TOTAL_KEYWORDS)
+
+    # Optional: If tax invoice, also keep tax/before-tax/TRN logic
+    if contains_keyword(doc.text.lower(), TAX_INVOICE_KEYWORDS):
+        if not fields["trn_vat_number"]:
+            fields["trn_vat_number"] = extract_number_after_keyword(
+                tokens, TRN_VAT_KEYWORDS
+            )
+        if not fields["before_tax_amount"]:
+            fields["before_tax_amount"] = extract_number_after_keyword(
+                tokens, BEFORE_TAX_KEYWORDS
+            )
+        if not fields["tax_amount"]:
+            fields["tax_amount"] = extract_number_after_keyword(
+                tokens, TAX_AMOUNT_KEYWORDS
+            )
+
     # Derive before-tax if missing
     if fields["total"] and fields["tax_amount"] and not fields["before_tax_amount"]:
         try:
@@ -267,6 +450,8 @@ def parse_document_fields(doc: documentai.Document) -> Dict[str, Optional[str]]:
             )
         except Exception:
             pass
+
+    fields = fix_tax_amount(fields)
 
     return fields
 
