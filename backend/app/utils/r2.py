@@ -1,4 +1,5 @@
 import boto3
+import mimetypes
 from app.core.config import (
     R2_BUCKET,
     R2_ENDPOINT,
@@ -20,6 +21,26 @@ def upload_to_r2(file_obj, filename: str) -> str:
     Upload file object to R2 and return the public URL
     """
     s3.upload_fileobj(file_obj, R2_BUCKET, filename, ExtraArgs={"ACL": "public-read"})
+    return f"https://pub-{ACCOUNT_HASH}.r2.dev/{filename}"
+
+
+def upload_to_r2_bytes(content: bytes, filename: str) -> str:
+    """
+    Upload bytes directly to Cloudflare R2 (no temp file on disk).
+    """
+    mime_type, _ = mimetypes.guess_type(filename)
+    extra_args = {"ACL": "public-read"}
+    if mime_type:
+        extra_args["ContentType"] = mime_type
+
+    s3.put_object(
+        Bucket=R2_BUCKET,
+        Key=filename,
+        Body=content,
+        **extra_args,
+    )
+
+    # Return the public-accessible URL
     return f"https://pub-{ACCOUNT_HASH}.r2.dev/{filename}"
 
 

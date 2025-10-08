@@ -23,8 +23,10 @@ engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     future=True,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=5,
+    max_overflow=5,
+    pool_recycle=300,
+    pool_timeout=10,
 )
 SessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()

@@ -30,31 +30,32 @@ async def create_invoice(
 async def get_invoice_by_id_and_owner(
     db: AsyncSession, invoice_id: int, owner_id: int
 ) -> Optional[invoices_models.Invoice]:
-    result = await db.execute(
-        select(invoices_models.Invoice).where(
+    stmt = (
+        select(invoices_models.Invoice)
+        .where(
             invoices_models.Invoice.id == invoice_id,
             invoices_models.Invoice.owner_id == owner_id,
         )
+        .execution_options(populate_existing=False, autoflush=False, autocommit=False)
     )
+    result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
 
 async def list_invoices_by_owner(db: AsyncSession, owner_id: int):
-    result = await db.execute(
-        select(invoices_models.Invoice).where(
-            invoices_models.Invoice.owner_id == owner_id
-        )
+    stmt = select(invoices_models.Invoice).where(
+        invoices_models.Invoice.owner_id == owner_id
     )
+    result = await db.execute(stmt)
     return result.scalars().all()
 
 
 async def list_invoices_to_review_by_owner(db: AsyncSession, owner_id: int):
-    result = await db.execute(
-        select(invoices_models.Invoice).where(
-            invoices_models.Invoice.owner_id == owner_id,
-            invoices_models.Invoice.reviewed == False,
-        )
+    stmt = select(invoices_models.Invoice).where(
+        invoices_models.Invoice.owner_id == owner_id,
+        invoices_models.Invoice.reviewed == False,
     )
+    result = await db.execute(stmt)
     return result.scalars().all()
 
 

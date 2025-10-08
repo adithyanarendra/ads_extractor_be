@@ -1,4 +1,5 @@
 import shutil
+import asyncio
 import os
 from uuid import uuid4
 import mimetypes
@@ -14,8 +15,14 @@ from ..users import crud as users_crud
 from . import schemas as invoices_schemas
 from . import crud as invoices_crud
 from ...core.database import get_db
-from ...utils.ocr_parser import process_invoice
-from ...utils.r2 import upload_to_r2, get_file_from_r2, s3, R2_BUCKET
+from ...utils.ocr_parser import process_invoice, process_invoice_bytes
+from ...utils.r2 import (
+    upload_to_r2,
+    upload_to_r2_bytes,
+    get_file_from_r2,
+    s3,
+    R2_BUCKET,
+)
 
 router = APIRouter(prefix="/invoice", tags=["invoices"])
 
@@ -51,26 +58,17 @@ async def extract_invoice(
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Save file with a unique filename to avoid collisions
     ext = os.path.splitext(file.filename)[1]
     safe_name = f"{uuid4().hex}{ext}"
-    local_path = os.path.join(UPLOAD_DIR, safe_name)
+    content = await file.read()
+    loop = asyncio.get_event_loop()
+    parsed_fields = await loop.run_in_executor(
+        None, process_invoice_bytes, content, ext
+    )
 
-    try:
-        with open(local_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    upload_task = asyncio.to_thread(upload_to_r2_bytes, content, safe_name)
 
-        parsed_fields = process_invoice(local_path)
-
-        with open(local_path, "rb") as f:
-            file_url = upload_to_r2(f, safe_name)
-
-    finally:
-        if os.path.exists(local_path):
-            try:
-                os.remove(local_path)
-            except Exception as e:
-                print(f"Failed to delete temp file {local_path}: {e}")
+    file_url = await upload_task
 
     invoice = await invoices_crud.create_invoice(
         db, current_user.id, file_url, parsed_fields
