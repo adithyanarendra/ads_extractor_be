@@ -324,27 +324,27 @@ def preprocess_image_bytes(file_bytes: bytes) -> bytes:
 def fix_tax_amount(fields: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
     """
     Fix tax and before-tax amounts:
-    - Recalc tax if missing, negative, greater than total,
-    or not 5% of total (with small tolerance for floating point).
-    - Tax = 5% of total when recalculated.
+    - Only recalculate tax if it's missing.
+    - If a tax amount exists and is within 0 and total, keep it as-is (discounts may apply).
+    - Tax = 5% of total only when missing.
     - Before-tax = total - tax.
     - Always round to 2 decimal places.
     """
     try:
         total = float(fields["total"]) if fields["total"] else None
         if not total:
-            return fields  # cannot compute without total
+            return fields
 
         tax = float(fields["tax_amount"]) if fields["tax_amount"] else None
-        expected_tax = round(total * 0.05, 2)
 
-        # Recalculate tax if missing, negative, greater than total, or not equal to 5%
-        if tax is None or tax < 0 or tax > total or round(tax, 2) != expected_tax:
-            tax = expected_tax
+        if tax is None:
+            tax = round(total * (100 / 105), 2)
+        else:
+            if tax < 0 or tax > total:
+                tax = round(total * (100 / 105), 2)
 
         before_tax = round(total - tax, 2)
 
-        # Store as string with 2 decimal places
         fields["tax_amount"] = f"{tax:.2f}"
         fields["before_tax_amount"] = f"{before_tax:.2f}"
 

@@ -12,10 +12,12 @@ app = FastAPI(title="FastAPI Invoice OCR")
 
 origins = [
     "http://localhost:5173",  # your frontend URL (Vite default)
+    "http://localhost:5174",
     "http://127.0.0.1:5173",
     "http://localhost:3000",  # React default dev server
     "http://127.0.0.1:3000",
     "https://ads-extractor-fe.onrender.com",
+    "49.43.169.79",
 ]
 
 app.add_middleware(
