@@ -23,8 +23,8 @@ engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     future=True,
-    pool_size=5,
-    max_overflow=5,
+    pool_size=2,
+    max_overflow=3,
     pool_recycle=300,
     pool_timeout=10,
 )

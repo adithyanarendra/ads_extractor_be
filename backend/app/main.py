@@ -55,3 +55,9 @@ async def startup():
     # Create DB tables if they don't exist
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    # Close all connections in the pool
+    await engine.dispose()
