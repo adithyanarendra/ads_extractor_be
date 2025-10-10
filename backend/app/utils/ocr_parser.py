@@ -86,14 +86,24 @@ MONTHS = {
 
 
 def normalize_date(date_str: str) -> Optional[str]:
-    """Convert any date string to DD-MM-YYYY format, including '20-aug-2025' style."""
+    """Convert any date string to DD-MM-YYYY format, handling multiple separators and month names."""
     if not date_str:
         return None
     try:
         s = date_str.lower().strip()
-        # replace month abbreviations with numbers
+        # Replace month abbreviations with numbers
         for k, v in MONTHS.items():
             s = re.sub(rf"\b{k}\b", v, s)
+
+        # Unify separators: ".", "/", " ", "_" → "-"
+        s = re.sub(r"[./_]", "-", s)
+        s = re.sub(r"\s+", "-", s)
+
+        # Ensure 2-digit day/month parts
+        parts = re.split(r"[-]", s)
+        parts = [p.zfill(2) if p.isdigit() and len(p) == 1 else p for p in parts]
+        s = "-".join(parts)
+
         dt = date_parser.parse(s, dayfirst=True, fuzzy=True)
         return dt.strftime("%d-%m-%Y")
     except Exception:
@@ -142,6 +152,26 @@ def extract_date_after_keyword(tokens, keywords, window=3) -> Optional[str]:
                 try_date = normalize_date(next_text)
                 if try_date:
                     return try_date
+    return None
+
+
+def extract_any_date(tokens) -> Optional[str]:
+    """Fallback: scan all tokens for standalone date-like patterns."""
+    text = " ".join(t["text"] for t in tokens)
+
+    # Common patterns (DD-MM-YYYY, DD.MM.YYYY, 21 Aug 2025, etc.)
+    patterns = [
+        r"\b\d{1,2}[-./\s]?\d{1,2}[-./\s]?\d{2,4}\b",
+        r"\b\d{1,2}\s?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s?\d{2,4}\b",
+        r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s?\d{1,2},?\s?\d{2,4}\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            normalized = normalize_date(match.group(0))
+            if normalized:
+                return normalized
     return None
 
 
@@ -324,11 +354,11 @@ def preprocess_image_bytes(file_bytes: bytes) -> bytes:
 def fix_tax_amount(fields: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
     """
     Fix tax and before-tax amounts:
-    - Only recalculate tax if it's missing.
-    - If a tax amount exists and is within 0 and total, keep it as-is (discounts may apply).
-    - Tax = 5% of total only when missing.
-    - Before-tax = total - tax.
-    - Always round to 2 decimal places.
+    - Only recalculate if tax is missing or invalid.
+    - before_tax = total * 100 / 105
+    - tax = total - before_tax
+    - Keep existing tax if it is valid (within 0 and total).
+    - Round to 2 decimals.
     """
     try:
         total = float(fields["total"]) if fields["total"] else None
@@ -336,17 +366,19 @@ def fix_tax_amount(fields: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]
             return fields
 
         tax = float(fields["tax_amount"]) if fields["tax_amount"] else None
+        before_tax = (
+            float(fields["before_tax_amount"]) if fields["before_tax_amount"] else None
+        )
 
-        if tax is None:
-            tax = round(total * (100 / 105), 2)
-        else:
-            if tax < 0 or tax > total:
-                tax = round(total * (100 / 105), 2)
+        if tax is None or tax < 0 or tax > total:
+            before_tax = round(total * 100 / 105, 2)
+            tax = round(total - before_tax, 2)
 
-        before_tax = round(total - tax, 2)
+        elif before_tax is None:
+            before_tax = round(total - tax, 2)
 
-        fields["tax_amount"] = f"{tax:.2f}"
         fields["before_tax_amount"] = f"{before_tax:.2f}"
+        fields["tax_amount"] = f"{tax:.2f}"
 
     except Exception:
         pass
@@ -369,19 +401,36 @@ def parse_document_fields(doc: documentai.Document) -> Dict[str, Optional[str]]:
     }
 
     tokens = []
-    for page_index, page in enumerate(doc.pages):
-        for token_index, token in enumerate(page.tokens):
-            token_text = get_token_text(token, doc.text)
-            confidence = token.layout.confidence if token.layout.confidence else 0.0
-            tokens.append(
-                {
-                    "text": token_text,
-                    "confidence": confidence,
-                    "page": page_index + 1,
-                    "token_index": token_index,
-                }
-            )
-            fields["all_tokens"].append({"text": token_text, "confidence": confidence})
+    # for page_index, page in enumerate(doc.pages):
+    #     for token_index, token in enumerate(page.tokens):
+    #         token_text = get_token_text(token, doc.text)
+    #         confidence = token.layout.confidence if token.layout.confidence else 0.0
+    #         tokens.append(
+    #             {
+    #                 "text": token_text,
+    #                 "confidence": confidence,
+    #                 "page": page_index + 1,
+    #                 "token_index": token_index,
+    #             }
+    #         )
+    #         fields["all_tokens"].append(
+    #             {
+    #                 "text": token_text,
+    #                 "confidence": confidence,
+    #                 "page": page_index + 1,
+    #                 "token_index": token_index,
+    #                 "bounding_box": (
+    #                     [
+    #                         {"x": round(v.x, 4), "y": round(v.y, 4)}
+    #                         for v in token.layout.bounding_poly.vertices
+    #                     ]
+    #                     if token.layout.bounding_poly
+    #                     and token.layout.bounding_poly.vertices
+    #                     else None
+    #                 ),
+    #                 "block_id": getattr(token.layout, "id", None),
+    #             }
+    #         )
 
     # Entity-based extraction (Document AI structured fields)
     for entity in doc.entities:
@@ -421,8 +470,15 @@ def parse_document_fields(doc: documentai.Document) -> Dict[str, Optional[str]]:
         fields["tax_amount"] = extract_number_after_keyword(tokens, TAX_AMOUNT_KEYWORDS)
 
     if not fields["invoice_date"]:
+        # Try keyword-based detection
         date_str = extract_date_after_keyword(tokens, DATE_KEYWORDS)
-        fields["invoice_date"] = normalize_date(date_str)
+        normalized = normalize_date(date_str)
+
+        if not normalized:
+            # Try full-document fallback
+            normalized = extract_any_date(tokens)
+
+        fields["invoice_date"] = normalized
 
     if not fields["total"]:
         fields["total"] = extract_total_amount(tokens, TOTAL_KEYWORDS)
