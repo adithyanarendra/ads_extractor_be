@@ -401,36 +401,36 @@ def parse_document_fields(doc: documentai.Document) -> Dict[str, Optional[str]]:
     }
 
     tokens = []
-    # for page_index, page in enumerate(doc.pages):
-    #     for token_index, token in enumerate(page.tokens):
-    #         token_text = get_token_text(token, doc.text)
-    #         confidence = token.layout.confidence if token.layout.confidence else 0.0
-    #         tokens.append(
-    #             {
-    #                 "text": token_text,
-    #                 "confidence": confidence,
-    #                 "page": page_index + 1,
-    #                 "token_index": token_index,
-    #             }
-    #         )
-    #         fields["all_tokens"].append(
-    #             {
-    #                 "text": token_text,
-    #                 "confidence": confidence,
-    #                 "page": page_index + 1,
-    #                 "token_index": token_index,
-    #                 "bounding_box": (
-    #                     [
-    #                         {"x": round(v.x, 4), "y": round(v.y, 4)}
-    #                         for v in token.layout.bounding_poly.vertices
-    #                     ]
-    #                     if token.layout.bounding_poly
-    #                     and token.layout.bounding_poly.vertices
-    #                     else None
-    #                 ),
-    #                 "block_id": getattr(token.layout, "id", None),
-    #             }
-    #         )
+    for page_index, page in enumerate(doc.pages):
+        for token_index, token in enumerate(page.tokens):
+            token_text = get_token_text(token, doc.text)
+            confidence = token.layout.confidence if token.layout.confidence else 0.0
+            tokens.append(
+                {
+                    "text": token_text,
+                    "confidence": confidence,
+                    "page": page_index + 1,
+                    "token_index": token_index,
+                }
+            )
+            fields["all_tokens"].append(
+                {
+                    "text": token_text,
+                    "confidence": confidence,
+                    "page": page_index + 1,
+                    "token_index": token_index,
+                    "bounding_box": (
+                        [
+                            {"x": round(v.x, 4), "y": round(v.y, 4)}
+                            for v in token.layout.bounding_poly.vertices
+                        ]
+                        if token.layout.bounding_poly
+                        and token.layout.bounding_poly.vertices
+                        else None
+                    ),
+                    "block_id": getattr(token.layout, "id", None),
+                }
+            )
 
     # Entity-based extraction (Document AI structured fields)
     for entity in doc.entities:

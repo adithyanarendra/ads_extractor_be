@@ -1,7 +1,9 @@
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from app.api.lov.routes import router as lov_router
 
 from .core.database import engine, Base
 from .api.users import routes as users_routes
@@ -31,6 +33,7 @@ app.add_middleware(
 app.include_router(users_routes.router)
 app.include_router(invoices_routes.router)
 app.include_router(companies_routes.router)
+app.include_router(lov_router)
 
 
 @app.get("/")
@@ -61,3 +64,4 @@ async def startup():
 async def shutdown():
     # Close all connections in the pool
     await engine.dispose()
+
