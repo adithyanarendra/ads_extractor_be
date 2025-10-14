@@ -15,7 +15,7 @@ from ..users import crud as users_crud
 from . import schemas as invoices_schemas
 from . import crud as invoices_crud
 from ...core.database import get_db
-from ...utils.ocr_parser import process_invoice, process_invoice_bytes
+from ...utils.ocr_parser import process_invoice
 from ...utils.r2 import (
     upload_to_r2,
     upload_to_r2_bytes,
@@ -61,20 +61,38 @@ async def extract_invoice(
     ext = os.path.splitext(file.filename)[1]
     safe_name = f"{uuid4().hex}{ext}"
     content = await file.read()
+
     loop = asyncio.get_event_loop()
-    parsed_fields = await loop.run_in_executor(
-        None, process_invoice_bytes, content, ext
-    )
+    parsed_fields = await loop.run_in_executor(None, process_invoice, content, ext)
 
-    upload_task = asyncio.to_thread(upload_to_r2_bytes, content, safe_name)
+    file_url = await asyncio.to_thread(upload_to_r2_bytes, content, safe_name)
 
-    file_url = await upload_task
+    field_values = [
+        parsed_fields.get("vendor_name"),
+        parsed_fields.get("invoice_number"),
+        parsed_fields.get("invoice_date"),
+        parsed_fields.get("trn_vat_number"),
+        parsed_fields.get("before_tax_amount"),
+        parsed_fields.get("tax_amount"),
+        parsed_fields.get("total"),
+    ]
+
+    all_null = all(v in [None, ""] for v in field_values)
+
+    if all_null:
+        return {
+            "ok": False,
+            "msg": "Invoice parsing failed, upload the document again",
+            "parsed_fields": parsed_fields,
+            "file_location": file_url,
+        }
 
     invoice = await invoices_crud.create_invoice(
         db, current_user.id, file_url, parsed_fields
     )
 
     return {
+        "ok": True,
         "msg": "Invoice uploaded and parsed",
         "invoice_id": invoice.id,
         "parsed_fields": parsed_fields,
