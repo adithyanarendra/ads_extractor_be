@@ -18,7 +18,7 @@ origins = [
     "http://localhost:3000",  # React default dev server
     "http://127.0.0.1:3000",
     "https://ads-extractor-fe.onrender.com", #render fe
-    "https://aicountant.tech/", #hostinger fe
+    "https://aicountant.tech", #hostinger fe
     "49.43.169.79",
 ]
 
