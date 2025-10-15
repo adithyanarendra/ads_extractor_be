@@ -1,8 +1,9 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import delete
+from sqlalchemy import delete, or_, and_, desc
 from typing import Optional, Dict
 from . import models as invoices_models
+from datetime import datetime
 
 
 async def create_invoice(
@@ -42,21 +43,62 @@ async def get_invoice_by_id_and_owner(
     return result.scalar_one_or_none()
 
 
-async def list_invoices_by_owner(db: AsyncSession, owner_id: int):
+async def list_invoices_by_owner(
+    db: AsyncSession,
+    owner_id: int,
+    limit: int = 50,
+    offset: int = 0,
+    search: str | None = None,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+    ignore_pagination: bool = False,
+):
     stmt = select(invoices_models.Invoice).where(
         invoices_models.Invoice.owner_id == owner_id
     )
+
+    if search:
+        stmt = stmt.where(
+            or_(
+                invoices_models.Invoice.vendor_name.ilike(f"%{search}%"),
+                invoices_models.Invoice.invoice_number.ilike(f"%{search}%"),
+                invoices_models.Invoice.invoice_date.ilike(f"%{search}%"),
+                invoices_models.Invoice.trn_vat_number.ilike(f"%{search}%"),
+            )
+        )
+
+    if from_date and to_date:
+        stmt = stmt.where(
+            and_(
+                invoices_models.Invoice.invoice_date >= from_date.strftime("%Y-%m-%d"),
+                invoices_models.Invoice.invoice_date <= to_date.strftime("%Y-%m-%d"),
+            )
+        )
+    elif from_date:
+        stmt = stmt.where(
+            invoices_models.Invoice.invoice_date >= from_date.strftime("%Y-%m-%d")
+        )
+    elif to_date:
+        stmt = stmt.where(
+            invoices_models.Invoice.invoice_date <= to_date.strftime("%Y-%m-%d")
+        )
+
+    stmt = stmt.order_by(desc(invoices_models.Invoice.created_at))
+
+    if not ignore_pagination:
+        stmt = stmt.offset(offset).limit(limit)
+
     result = await db.execute(stmt)
     return result.scalars().all()
 
 
 async def list_invoices_to_review_by_owner(db: AsyncSession, owner_id: int):
-    stmt = select(invoices_models.Invoice).where(
+    stmt = select(invoices_models.Invoice.id, invoices_models.Invoice.file_path).where(
         invoices_models.Invoice.owner_id == owner_id,
         invoices_models.Invoice.reviewed == False,
     )
     result = await db.execute(stmt)
-    return result.scalars().all()
+    return [{"id": row.id, "file_path": row.file_path} for row in result.all()]
 
 
 async def update_invoice_review(

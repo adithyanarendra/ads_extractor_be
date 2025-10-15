@@ -27,6 +27,22 @@ class InvoiceListResponse(BaseModel):
         orm_mode = True
 
 
+class InvoiceIdFilePath(BaseModel):
+    id: int
+    file_path: str
+
+    class Config:
+        orm_mode = True
+
+
+class InvoiceTBRListResponse(BaseModel):
+    ok: bool
+    invoices: List[InvoiceIdFilePath]
+
+    class Config:
+        orm_mode = True
+
+
 class ReviewPayload(BaseModel):
     invoice_id: int
     reviewed: bool

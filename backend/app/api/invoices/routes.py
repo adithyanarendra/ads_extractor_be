@@ -2,11 +2,14 @@ import shutil
 import asyncio
 import os
 from uuid import uuid4
+from datetime import datetime
 import mimetypes
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import and_, or_
 from urllib.parse import urlparse
+from typing import Tuple
 
 
 from app.core import auth
@@ -138,22 +141,78 @@ async def review_invoice(
     return {"ok": True, "msg": "Invoice review updated", "invoice_id": invoice.id}
 
 
-@router.get("/all", response_model=invoices_schemas.InvoiceListResponse)
-async def get_all_invoices(
+def parse_range(range_str: str) -> Tuple[int, int] | dict:
+    """
+    Parses a string like '1-50' into (start, end)
+    Returns dict with error if invalid
+    """
+    try:
+        start_str, end_str = range_str.split("-")
+        start, end = int(start_str), int(end_str)
+        if start < 1 or end < start:
+            raise ValueError()
+        return start, end
+    except Exception:
+        return {
+            "ok": False,
+            "message": "Invalid range format. Use start-end, e.g., 1-50.",
+        }
+
+
+@router.get("/all/{range_str}", response_model=invoices_schemas.InvoiceListResponse)
+async def get_all_invoices_paginated(
+    range_str: str,
+    search: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    invoices = await invoices_crud.list_invoices_by_owner(db, current_user.id)
+    from_dt = None
+    to_dt = None
+    try:
+        if from_date:
+            from_dt = datetime.strptime(from_date, "%Y-%m-%d")
+        if to_date:
+            to_dt = datetime.strptime(to_date, "%Y-%m-%d")
+    except ValueError:
+        return {"ok": False, "message": "Invalid date format. Use YYYY-MM-DD."}
+
+    if search or from_dt or to_dt:
+        invoices = await invoices_crud.list_invoices_by_owner(
+            db,
+            owner_id=current_user.id,
+            search=search,
+            from_date=from_dt,
+            to_date=to_dt,
+            ignore_pagination=True,
+        )
+        return {"ok": True, "invoices": invoices}
+
+    parsed = parse_range(range_str)
+    if isinstance(parsed, dict):  # error
+        return parsed
+
+    start, end = parsed
+    limit = end - start + 1
+    offset = start - 1
+
+    invoices = await invoices_crud.list_invoices_by_owner(
+        db,
+        owner_id=current_user.id,
+        limit=limit,
+        offset=offset,
+    )
     return {"ok": True, "invoices": invoices}
 
 
-@router.get("/to_be_reviewed", response_model=list[invoices_schemas.InvoiceOut])
+@router.get("/to_be_reviewed", response_model=invoices_schemas.InvoiceTBRListResponse)
 async def to_be_reviewed(
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     invoices = await invoices_crud.list_invoices_to_review_by_owner(db, current_user.id)
-    return invoices
+    return {"ok": True, "invoices": invoices}
 
 
 @router.post("/edit/{invoice_id}")

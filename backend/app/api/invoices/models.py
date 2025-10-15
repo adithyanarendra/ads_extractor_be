@@ -20,5 +20,8 @@ class Invoice(Base):
     reviewed = Column(Boolean, default=False)
     remarks = Column(String, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
     owner = relationship("User", back_populates="invoices")
