@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +17,8 @@ origins = [
     "http://127.0.0.1:5173",
     "http://localhost:3000",  # React default dev server
     "http://127.0.0.1:3000",
-    "https://ads-extractor-fe.onrender.com",
+    "https://ads-extractor-fe.onrender.com", #render fe
+    "https://aicountant.tech/", #hostinger fe
     "49.43.169.79",
 ]
 
@@ -64,4 +64,3 @@ async def startup():
 async def shutdown():
     # Close all connections in the pool
     await engine.dispose()
-
