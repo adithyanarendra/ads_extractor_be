@@ -10,21 +10,27 @@ SUPABASE_DB_PASS_RAW = os.getenv("SUPABASE_DB_PASS")
 SUPABASE_DB_PASS = urllib.parse.quote_plus(SUPABASE_DB_PASS_RAW)
 
 DB_USER = "postgres.cehisscgqmcllzejlruz"
-DB_HOST = "db.cehisscgqmcllzejlruz.supabase.co"
+# below is only for render
+# DB_HOST = "db.cehisscgqmcllzejlruz.supabase.co"
+DB_HOST = "aws-1-ap-southeast-1.pooler.supabase.com"
 DB_PORT = 5432
 DB_NAME = "postgres"
 
+
 DATABASE_URL = (
-    f"postgresql+asyncpg://postgres:{SUPABASE_DB_PASS}@{DB_HOST}:5432/postgres"
+    f"postgresql+asyncpg://{DB_USER}:{SUPABASE_DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 )
+# DATABASE_URL = (
+#     f"postgresql+asyncpg://postgres:{SUPABASE_DB_PASS}@{DB_HOST}:5432/postgres"
+# )
 
 
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     future=True,
-    pool_size=3,
-    max_overflow=5,
+    pool_size=2,
+    max_overflow=3,
     pool_recycle=300,
     pool_timeout=30,
     # connect_args={"ssl": True},
