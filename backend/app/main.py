@@ -8,6 +8,9 @@ from .core.database import engine, Base
 from .api.users import routes as users_routes
 from .api.invoices import routes as invoices_routes
 from .api.companies import routes as companies_routes
+from app.api.batches.routes import router as batches_router
+from app.api.batches import models as batches_models
+from app.api.invoices import models as invoices_models
 
 app = FastAPI(title="FastAPI Invoice OCR")
 
@@ -34,6 +37,8 @@ app.include_router(users_routes.router)
 app.include_router(invoices_routes.router)
 app.include_router(companies_routes.router)
 app.include_router(lov_router)
+app.include_router(batches_router)
+
 
 
 @app.get("/")

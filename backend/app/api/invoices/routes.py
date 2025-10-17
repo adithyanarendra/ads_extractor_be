@@ -11,6 +11,7 @@ from sqlalchemy import and_, or_
 from urllib.parse import urlparse
 from typing import Tuple
 
+from ..retraining_model.data_processor import process_with_qwen
 
 from app.core import auth
 from ..users import models as users_models
@@ -55,8 +56,27 @@ async def get_current_user(
     return user
 
 
-@router.post("/extract")
+def parse_range(range_str: str) -> Tuple[int, int] | dict:
+    """
+    Parses a string like '1-50' into (start, end)
+    Returns dict with error if invalid
+    """
+    try:
+        start_str, end_str = range_str.split("-")
+        start, end = int(start_str), int(end_str)
+        if start < 1 or end < start:
+            raise ValueError()
+        return start, end
+    except Exception:
+        return {
+            "ok": False,
+            "message": "Invalid range format. Use start-end, e.g., 1-50.",
+        }
+
+
+@router.post("/extract/{invoice_type}")
 async def extract_invoice(
+    invoice_type: str,
     file: UploadFile = File(...),
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -90,6 +110,7 @@ async def extract_invoice(
             "file_location": file_url,
         }
 
+    parsed_fields["type"] = invoice_type
     invoice = await invoices_crud.create_invoice(
         db, current_user.id, file_url, parsed_fields
     )
@@ -141,26 +162,12 @@ async def review_invoice(
     return {"ok": True, "msg": "Invoice review updated", "invoice_id": invoice.id}
 
 
-def parse_range(range_str: str) -> Tuple[int, int] | dict:
-    """
-    Parses a string like '1-50' into (start, end)
-    Returns dict with error if invalid
-    """
-    try:
-        start_str, end_str = range_str.split("-")
-        start, end = int(start_str), int(end_str)
-        if start < 1 or end < start:
-            raise ValueError()
-        return start, end
-    except Exception:
-        return {
-            "ok": False,
-            "message": "Invalid range format. Use start-end, e.g., 1-50.",
-        }
-
-
-@router.get("/all/{range_str}", response_model=invoices_schemas.InvoiceListResponse)
+@router.get(
+    "/all/{invoice_type}/{range_str}",
+    response_model=invoices_schemas.InvoiceListResponse,
+)
 async def get_all_invoices_paginated(
+    invoice_type: str,
     range_str: str,
     search: str | None = None,
     from_date: str | None = None,
@@ -168,6 +175,8 @@ async def get_all_invoices_paginated(
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if invoice_type not in {"expense", "sales"}:
+        return {"ok": False, "message": "Invalid invoice type"}
     from_dt = None
     to_dt = None
     try:
@@ -182,6 +191,7 @@ async def get_all_invoices_paginated(
         invoices = await invoices_crud.list_invoices_by_owner(
             db,
             owner_id=current_user.id,
+            invoice_type=invoice_type,
             search=search,
             from_date=from_dt,
             to_date=to_dt,
@@ -200,6 +210,7 @@ async def get_all_invoices_paginated(
     invoices = await invoices_crud.list_invoices_by_owner(
         db,
         owner_id=current_user.id,
+        invoice_type=invoice_type,
         limit=limit,
         offset=offset,
     )
@@ -302,3 +313,45 @@ async def delete_invoice(
             print(f"Error deleting file from R2 {file_url}: {e}")
 
     return {"msg": "Invoice deleted", "invoice_id": invoice_id}
+
+
+@router.post("/extract-local")
+async def extract_invoice_local(
+    file: UploadFile = File(...),
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+
+    ext = os.path.splitext(file.filename)[1]
+    safe_name = f"{uuid4().hex}_local{ext}"
+    local_path = os.path.join(UPLOAD_DIR, safe_name)
+
+    try:
+        with open(local_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        with open(local_path, "rb") as f:
+            file_bytes = f.read()
+
+        parsed_fields = process_with_qwen(file_bytes, ext)
+
+        with open(local_path, "rb") as f:
+            file_url = upload_to_r2(f, safe_name)
+
+    finally:
+        if os.path.exists(local_path):
+            try:
+                os.remove(local_path)
+            except Exception as e:
+                print(f"Failed to delete temp file {local_path}: {e}")
+
+    invoice = await invoices_crud.create_invoice(
+        db, current_user.id, file_url, parsed_fields
+    )
+
+    return {
+        "msg": "Invoice uploaded and parsed",
+        "invoice_id": invoice.id,
+        "parsed_fields": parsed_fields,
+        "file_location": file_url,
+    }

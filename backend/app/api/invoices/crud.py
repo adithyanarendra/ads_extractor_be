@@ -21,6 +21,7 @@ async def create_invoice(
         total=fields.get("total"),
         remarks=fields.get("remarks"),
         reviewed=False,
+        type=fields.get("type") or None,
     )
     db.add(inv)
     await db.commit()
@@ -46,6 +47,7 @@ async def get_invoice_by_id_and_owner(
 async def list_invoices_by_owner(
     db: AsyncSession,
     owner_id: int,
+    invoice_type: str | None = None,
     limit: int = 50,
     offset: int = 0,
     search: str | None = None,
@@ -54,8 +56,12 @@ async def list_invoices_by_owner(
     ignore_pagination: bool = False,
 ):
     stmt = select(invoices_models.Invoice).where(
-        invoices_models.Invoice.owner_id == owner_id
+        invoices_models.Invoice.owner_id == owner_id,
+        invoices_models.Invoice.batch_id.is_(None),
     )
+
+    if invoice_type:
+        stmt = stmt.where(invoices_models.Invoice.type == invoice_type)
 
     if search:
         stmt = stmt.where(
@@ -122,6 +128,7 @@ async def update_invoice_review(
             "tax_amount",
             "total",
             "remarks",
+            "type",
         }
         for k, v in corrected_fields.items():
             if k in allowed:
@@ -150,6 +157,7 @@ async def edit_invoice(
         "tax_amount",
         "total",
         "remarks",
+        "type",
     }
     for k, v in corrected_fields.items():
         if k in allowed:

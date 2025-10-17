@@ -40,12 +40,13 @@ async def signup(
                 created_by_user_id = None
 
         db_user = await crud.create_user(
-            db, user.email, user.password, created_by=created_by_user_id
+            db, user.email, user.password, name=user.name, created_by=created_by_user_id
         )
         return {
             "ok": True,
             "msg": "User created successfully",
             "user_id": db_user.id,
+            "name": db_user.name,
             "admin": db_user.is_admin,
         }
 
@@ -76,6 +77,7 @@ async def login(user: users_schemas.UserLogin, db: AsyncSession = Depends(get_db
             "ok": True,
             "access_token": token,
             "token_type": "bearer",
+            "name": db_user.name,
             "admin": db_user.is_admin,
         }
 
@@ -223,3 +225,47 @@ async def reset_password(
         }
     except Exception as e:
         return {"ok": False, "error": "Unexpected error", "details": str(e)}
+
+
+@router.put("/update")
+async def update_user(
+    payload: users_schemas.UpdateUserRequest,
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        return {"ok": False, "error": "Authorization header required"}
+
+    token = authorization.split(" ")[1]
+    try:
+        current_user = await auth.get_current_user_from_token(token, db)
+    except Exception:
+        return {"ok": False, "error": "Invalid token"}
+
+    target_user_id = payload.user_id if hasattr(payload, "user_id") else current_user.id
+
+    if target_user_id != current_user.id and not current_user.is_admin:
+        return {"ok": False, "error": "Not authorized to update other users"}
+
+    target_user = await crud.get_user_by_id(db, target_user_id)
+    if not target_user:
+        return {"ok": False, "error": "Target user not found"}
+
+    updated_fields = payload.dict(exclude_unset=True, exclude={"user_id"})
+    if not updated_fields:
+        return {"ok": False, "error": "No fields to update"}
+
+    updated_user = await crud.update_user_fields(
+        db, target_user.id, updated_fields, updated_by=current_user.id
+    )
+
+    return {
+        "ok": True,
+        "msg": "User updated successfully",
+        "user": {
+            "id": updated_user.id,
+            "email": updated_user.email,
+            "name": updated_user.name,
+            "is_admin": updated_user.is_admin,
+        },
+    }

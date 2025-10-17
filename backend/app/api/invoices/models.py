@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from sqlalchemy import Column, String
 
 from ...core.database import Base
 
@@ -23,5 +24,9 @@ class Invoice(Base):
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    type = Column(String(20), nullable=True)
+    batch_id = Column(Integer, ForeignKey("batches.id"), nullable=True)
+    batch = relationship("Batch", back_populates="invoices")
 
     owner = relationship("User", back_populates="invoices")

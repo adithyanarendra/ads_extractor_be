@@ -13,6 +13,9 @@ class InvoiceBase(BaseModel):
     reviewed: Optional[bool] = False
     remarks: Optional[str] = None
 
+    type: Optional[str] = None
+
+
 
 class InvoiceOut(InvoiceBase):
     id: int

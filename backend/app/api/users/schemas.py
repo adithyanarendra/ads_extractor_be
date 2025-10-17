@@ -1,9 +1,11 @@
 from pydantic import BaseModel, EmailStr
+from typing import Optional
 
 
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
+    name: Optional[str] = None
 
 
 class UserLogin(BaseModel):
@@ -23,3 +25,8 @@ class ChangeUserTypeRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     email: str
     new_password: str
+
+
+class UpdateUserRequest(BaseModel):
+    user_id: Optional[int] = None
+    name: Optional[str] = None
