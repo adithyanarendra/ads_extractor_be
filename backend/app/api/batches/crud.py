@@ -37,6 +37,7 @@ async def list_batches(db: AsyncSession, owner_id: int) -> Dict[str, Any]:
                 "locked": b.locked,
                 "created_at": b.created_at.isoformat() if b.created_at else None,
                 "invoice_count": len(b.invoices) if b.invoices else 0,
+                "invoice_ids": [inv.id for inv in b.invoices or []],
             }
             for b in rows
         ]
@@ -319,3 +320,26 @@ async def generate_batch_zip_with_csv(
 
     zip_buffer.seek(0)
     return zip_buffer, data.get("batch_name", f"batch_{batch_id}")
+
+
+async def get_invoice_ids_for_batch(
+    db: AsyncSession, batch_id: int, owner_id: int
+) -> Dict[str, Any]:
+    """Return all invoice IDs for a given batch"""
+    try:
+        batch = (
+            await db.execute(
+                select(models.Batch)
+                .options(selectinload(models.Batch.invoices))
+                .where(models.Batch.id == batch_id, models.Batch.owner_id == owner_id)
+            )
+        ).scalar_one_or_none()
+        if not batch:
+            return _err("Batch not found.", "not_found")
+
+        invoice_ids = [inv.id for inv in batch.invoices or []]
+        return _ok(
+            "Fetched invoice IDs.", {"batch_id": batch.id, "invoice_ids": invoice_ids}
+        )
+    except Exception as e:
+        return _err("Failed to fetch invoice IDs.", str(e))

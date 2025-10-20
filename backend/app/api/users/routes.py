@@ -2,14 +2,11 @@ from fastapi import APIRouter, Depends, Header
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
-from pydantic import BaseModel
 import asyncio
-
 from ...core import auth
 from . import schemas as users_schemas
 from . import crud
 from ...core.database import get_db
-
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -62,6 +59,7 @@ async def signup(
 
 @router.post("/login")
 async def login(user: users_schemas.UserLogin, db: AsyncSession = Depends(get_db)):
+
     try:
         if not user.email or user.email.strip() == "":
             return {"ok": False, "error": "Email is required"}

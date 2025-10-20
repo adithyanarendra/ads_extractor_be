@@ -22,6 +22,18 @@ async def get_all_batches(
     return res
 
 
+@router.get("/{batch_id}")
+async def get_batch_invoice_ids(
+    batch_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(get_current_user),
+):
+    res = await crud.get_invoice_ids_for_batch(db, batch_id, owner_id=current_user.id)
+    if not res.get("ok"):
+        raise HTTPException(status_code=404, detail=res.get("message"))
+    return res
+
+
 @router.post("/add")
 async def add_batch(
     payload: BatchCreate,

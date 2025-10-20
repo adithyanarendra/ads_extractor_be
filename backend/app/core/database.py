@@ -31,11 +31,11 @@ engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     future=True,
-    pool_size=2,
-    max_overflow=3,
+    pool_size=3,
+    max_overflow=2,
     pool_recycle=300,
     pool_timeout=30,
-    # connect_args={"ssl": True},
+    pool_pre_ping=True,
 )
 SessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()

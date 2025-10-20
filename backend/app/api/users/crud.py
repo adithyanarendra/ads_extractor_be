@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any
 from ..users import models as users_models
 from ...utils.security import get_password_hash
 import datetime
+from app.utils.security import verify_password
 
 
 async def get_user_by_email(
@@ -58,7 +59,6 @@ async def authenticate_user(db: AsyncSession, email: str, password: str):
     user = await get_user_by_email(db, email)
     if not user:
         return None
-    from app.utils.security import verify_password
 
     if not verify_password(password, user.hashed_password):
         return None

@@ -314,43 +314,50 @@ async def delete_invoice(
 
     return {"msg": "Invoice deleted", "invoice_id": invoice_id}
 
-
-@router.post("/extract-local")
+@router.post("/extract-local/{invoice_type}")
 async def extract_invoice_local(
+    invoice_type: str,
     file: UploadFile = File(...),
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
 
     ext = os.path.splitext(file.filename)[1]
-    safe_name = f"{uuid4().hex}_local{ext}"
-    local_path = os.path.join(UPLOAD_DIR, safe_name)
+    safe_name = f"{uuid4().hex}_{invoice_type}_local{ext}"
+    content = await file.read()
+    loop = asyncio.get_event_loop()
+  
+    parsed_fields = await loop.run_in_executor(None, process_with_qwen, content, ext)
+    file_url = await asyncio.to_thread(upload_to_r2_bytes, content, safe_name)
+    field_values = [
+        parsed_fields.get("vendor_name"),
+        parsed_fields.get("invoice_number"),
+        parsed_fields.get("invoice_date"),
+        parsed_fields.get("trn_vat_number"),
+        parsed_fields.get("before_tax_amount"),
+        parsed_fields.get("tax_amount"),
+        parsed_fields.get("total"),
+    ]
 
-    try:
-        with open(local_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    all_null = all(v in [None, ""] for v in field_values)
 
-        with open(local_path, "rb") as f:
-            file_bytes = f.read()
+    if all_null:
+        return {
+            "ok": False,
+            "msg": f"{invoice_type.capitalize()} parsing failed, upload the document again",
+            "parsed_fields": parsed_fields,
+            "file_location": file_url,
+        }
 
-        parsed_fields = process_with_qwen(file_bytes, ext)
-
-        with open(local_path, "rb") as f:
-            file_url = upload_to_r2(f, safe_name)
-
-    finally:
-        if os.path.exists(local_path):
-            try:
-                os.remove(local_path)
-            except Exception as e:
-                print(f"Failed to delete temp file {local_path}: {e}")
+    parsed_fields["type"] = invoice_type
 
     invoice = await invoices_crud.create_invoice(
         db, current_user.id, file_url, parsed_fields
     )
 
     return {
-        "msg": "Invoice uploaded and parsed",
+        "ok": True,
+        "msg": f"{invoice_type.capitalize()} uploaded and parsed successfully (local mode)",
         "invoice_id": invoice.id,
         "parsed_fields": parsed_fields,
         "file_location": file_url,
