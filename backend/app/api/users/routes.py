@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends, Header
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import asyncio
 from ...core import auth
 from . import schemas as users_schemas
 from . import crud
+from . import models as users_models
 from ...core.database import get_db
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -59,7 +62,6 @@ async def signup(
 
 @router.post("/login")
 async def login(user: users_schemas.UserLogin, db: AsyncSession = Depends(get_db)):
-
     try:
         if not user.email or user.email.strip() == "":
             return {"ok": False, "error": "Email is required"}
@@ -69,6 +71,12 @@ async def login(user: users_schemas.UserLogin, db: AsyncSession = Depends(get_db
         db_user = await crud.authenticate_user(db, user.email, user.password)
         if not db_user:
             return {"ok": False, "error": "Invalid credentials"}
+
+        now = datetime.now(timezone.utc)
+        signup_time = db_user.signup_at
+        if not db_user.is_approved:
+            if signup_time + timedelta(hours=24) < now:
+                return {"ok": False, "error": "User not approved. Contact admin."}
 
         token = auth.create_access_token({"sub": db_user.email})
         return {
@@ -267,3 +275,39 @@ async def update_user(
             "is_admin": updated_user.is_admin,
         },
     }
+
+
+@router.get("/to_be_approved")
+async def get_unapproved_users(
+    db: AsyncSession = Depends(get_db),
+    current_admin=Depends(auth.get_current_admin),
+):
+    result = await db.execute(
+        select(users_models.User).where(users_models.User.is_approved == False)
+    )
+    users = result.scalars().all()
+    users_data = [
+        {"id": u.id, "email": u.email, "signup_at": u.signup_at} for u in users
+    ]
+    return {"ok": True, "users": users_data}
+
+
+@router.post("/approve/{user_id}")
+async def approve_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin=Depends(auth.get_current_admin),
+):
+    user = await crud.get_user_by_id(db, user_id)
+    if not user:
+        return {"ok": False, "error": "User not found"}
+
+    user.is_approved = True
+    user.updated_at = datetime.utcnow()
+    user.last_updated_at = datetime.utcnow()
+    user.updated_by = current_admin.id
+    user.last_updated_by = current_admin.id
+
+    await db.commit()
+    await db.refresh(user)
+    return {"ok": True, "msg": f"User {user.email} approved"}

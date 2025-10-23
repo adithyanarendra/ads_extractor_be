@@ -6,6 +6,78 @@ from . import models as invoices_models
 from datetime import datetime
 
 
+async def create_processing_invoice(
+    db: AsyncSession, owner_id: int, vendor_name: str, invoice_type: str
+):
+    """
+    Creates a placeholder invoice entry when processing starts.
+    """
+    inv = invoices_models.Invoice(
+        owner_id=owner_id,
+        vendor_name=vendor_name,
+        is_processing=True,
+        reviewed=False,
+        type=invoice_type,
+        file_path="",  # will be updated after upload
+    )
+    db.add(inv)
+    await db.commit()
+    await db.refresh(inv)
+    return inv
+
+
+async def update_invoice_after_processing(
+    db: AsyncSession,
+    invoice_id: int,
+    parsed_fields: Dict[str, Optional[str]],
+    file_url: str,
+):
+    """
+    Replace placeholder data with parsed fields and mark as done.
+    """
+    stmt = select(invoices_models.Invoice).where(
+        invoices_models.Invoice.id == invoice_id
+    )
+    result = await db.execute(stmt)
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        return None
+
+    invoice.file_path = file_url
+    invoice.vendor_name = parsed_fields.get("vendor_name")
+    invoice.invoice_number = parsed_fields.get("invoice_number")
+    invoice.invoice_date = parsed_fields.get("invoice_date")
+    invoice.trn_vat_number = parsed_fields.get("trn_vat_number")
+    invoice.before_tax_amount = parsed_fields.get("before_tax_amount")
+    invoice.tax_amount = parsed_fields.get("tax_amount")
+    invoice.total = parsed_fields.get("total")
+    invoice.remarks = parsed_fields.get("remarks")
+    invoice.description = parsed_fields.get("description")
+    invoice.is_processing = False
+
+    await db.commit()
+    await db.refresh(invoice)
+    return invoice
+
+
+async def mark_invoice_failed(db: AsyncSession, invoice_id: int):
+    """
+    Marks an invoice as processed but failed (still useful for debugging).
+    """
+    stmt = select(invoices_models.Invoice).where(
+        invoices_models.Invoice.id == invoice_id
+    )
+    result = await db.execute(stmt)
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        return None
+
+    invoice.is_processing = False
+    invoice.remarks = "Parsing failed"
+    await db.commit()
+    return invoice
+
+
 async def create_invoice(
     db: AsyncSession, owner_id: int, file_path: str, fields: Dict[str, Optional[str]]
 ) -> invoices_models.Invoice:
@@ -20,6 +92,7 @@ async def create_invoice(
         tax_amount=fields.get("tax_amount"),
         total=fields.get("total"),
         remarks=fields.get("remarks"),
+        description=fields.get("description"),
         reviewed=False,
         type=fields.get("type") or None,
     )
@@ -51,8 +124,8 @@ async def list_invoices_by_owner(
     limit: int = 50,
     offset: int = 0,
     search: str | None = None,
-    from_date: datetime | None = None,
-    to_date: datetime | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
     ignore_pagination: bool = False,
 ):
     stmt = select(invoices_models.Invoice).where(
@@ -70,32 +143,38 @@ async def list_invoices_by_owner(
                 invoices_models.Invoice.invoice_number.ilike(f"%{search}%"),
                 invoices_models.Invoice.invoice_date.ilike(f"%{search}%"),
                 invoices_models.Invoice.trn_vat_number.ilike(f"%{search}%"),
+                invoices_models.Invoice.description.ilike(f"%{search}%"),
             )
-        )
-
-    if from_date and to_date:
-        stmt = stmt.where(
-            and_(
-                invoices_models.Invoice.invoice_date >= from_date.strftime("%Y-%m-%d"),
-                invoices_models.Invoice.invoice_date <= to_date.strftime("%Y-%m-%d"),
-            )
-        )
-    elif from_date:
-        stmt = stmt.where(
-            invoices_models.Invoice.invoice_date >= from_date.strftime("%Y-%m-%d")
-        )
-    elif to_date:
-        stmt = stmt.where(
-            invoices_models.Invoice.invoice_date <= to_date.strftime("%Y-%m-%d")
         )
 
     stmt = stmt.order_by(desc(invoices_models.Invoice.created_at))
-
     if not ignore_pagination:
         stmt = stmt.offset(offset).limit(limit)
 
     result = await db.execute(stmt)
-    return result.scalars().all()
+    invoices = result.scalars().all()
+
+    from_dt = datetime.strptime(from_date, "%Y-%m-%d") if from_date else None
+    to_dt = datetime.strptime(to_date, "%Y-%m-%d") if to_date else None
+
+    if from_dt or to_dt:
+        filtered = []
+        for inv in invoices:
+            if not inv.invoice_date:
+                filtered.append(inv)
+                continue
+            try:
+                inv_date = datetime.strptime(inv.invoice_date, "%d-%m-%Y")
+            except ValueError:
+                continue
+            if from_dt and inv_date < from_dt:
+                continue
+            if to_dt and inv_date > to_dt:
+                continue
+            filtered.append(inv)
+        return filtered
+
+    return invoices
 
 
 async def list_invoices_to_review_by_owner(db: AsyncSession, owner_id: int):
@@ -128,6 +207,7 @@ async def update_invoice_review(
             "tax_amount",
             "total",
             "remarks",
+            "description",
             "type",
         }
         for k, v in corrected_fields.items():
@@ -157,6 +237,7 @@ async def edit_invoice(
         "tax_amount",
         "total",
         "remarks",
+        "description",
         "type",
     }
     for k, v in corrected_fields.items():

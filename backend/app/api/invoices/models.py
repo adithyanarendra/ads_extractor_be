@@ -20,6 +20,7 @@ class Invoice(Base):
     total = Column(String, nullable=True)
     reviewed = Column(Boolean, default=False)
     remarks = Column(String, nullable=True)
+    description = Column(String, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -30,3 +31,5 @@ class Invoice(Base):
     batch = relationship("Batch", back_populates="invoices")
 
     owner = relationship("User", back_populates="invoices")
+
+    is_processing = Column(Boolean, default=False)

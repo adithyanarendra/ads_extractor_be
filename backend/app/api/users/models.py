@@ -14,6 +14,9 @@ class User(Base):
     name = Column(String, nullable=True)
     is_admin = Column(Boolean, default=False)
 
+    is_approved = Column(Boolean, default=False)
+    signup_at = Column(DateTime(timezone=True), server_default=func.now())
+
     # Audit fields
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -30,8 +33,6 @@ class User(Base):
         "Invoice", back_populates="owner", cascade="all, delete-orphan"
     )
 
-    batches = relationship(               
-        "Batch",
-        back_populates="owner",
-        cascade="all, delete-orphan"
+    batches = relationship(
+        "Batch", back_populates="owner", cascade="all, delete-orphan"
     )

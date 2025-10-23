@@ -48,6 +48,7 @@ async def create_user(
         created_by=created_by,
         updated_by=created_by,
         last_updated_by=created_by,
+        is_approved=False,
     )
     db.add(user)
     await db.commit()

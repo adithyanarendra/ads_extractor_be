@@ -12,9 +12,9 @@ class InvoiceBase(BaseModel):
     total: Optional[str] = None
     reviewed: Optional[bool] = False
     remarks: Optional[str] = None
-
+    description: Optional[str] = None
     type: Optional[str] = None
-
+    is_processing: Optional[bool] = False
 
 
 class InvoiceOut(InvoiceBase):

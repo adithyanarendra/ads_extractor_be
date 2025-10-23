@@ -21,12 +21,17 @@ from . import crud as invoices_crud
 from ...core.database import get_db
 from ...utils.ocr_parser import process_invoice
 from ...utils.r2 import (
-    upload_to_r2,
     upload_to_r2_bytes,
     get_file_from_r2,
     s3,
     R2_BUCKET,
 )
+from ...utils.files_service import (
+    upload_to_files_service_bytes,
+    get_file_from_files_service,
+)
+
+USE_CLOUD_STORAGE = True
 
 router = APIRouter(prefix="/invoice", tags=["invoices"])
 
@@ -85,10 +90,25 @@ async def extract_invoice(
     safe_name = f"{uuid4().hex}{ext}"
     content = await file.read()
 
+    placeholder_invoice = await invoices_crud.create_processing_invoice(
+        db=db,
+        owner_id=current_user.id,
+        vendor_name=file.filename,
+        invoice_type=invoice_type,
+    )
+
+    if USE_CLOUD_STORAGE:
+        file_url = await asyncio.to_thread(upload_to_r2_bytes, content, safe_name)
+    else:
+        file_url = await asyncio.to_thread(
+            upload_to_files_service_bytes, content, safe_name
+        )
+
+    placeholder_invoice.file_path = file_url
+    await db.commit()
+
     loop = asyncio.get_event_loop()
     parsed_fields = await loop.run_in_executor(None, process_invoice, content, ext)
-
-    file_url = await asyncio.to_thread(upload_to_r2_bytes, content, safe_name)
 
     field_values = [
         parsed_fields.get("vendor_name"),
@@ -99,26 +119,30 @@ async def extract_invoice(
         parsed_fields.get("tax_amount"),
         parsed_fields.get("total"),
     ]
-
     all_null = all(v in [None, ""] for v in field_values)
 
     if all_null:
+        await invoices_crud.mark_invoice_failed(db, placeholder_invoice.id)
         return {
             "ok": False,
             "msg": "Invoice parsing failed, upload the document again",
+            "invoice_id": placeholder_invoice.id,
             "parsed_fields": parsed_fields,
             "file_location": file_url,
         }
 
     parsed_fields["type"] = invoice_type
-    invoice = await invoices_crud.create_invoice(
-        db, current_user.id, file_url, parsed_fields
+    updated_invoice = await invoices_crud.update_invoice_after_processing(
+        db=db,
+        invoice_id=placeholder_invoice.id,
+        parsed_fields=parsed_fields,
+        file_url=file_url,
     )
 
     return {
         "ok": True,
         "msg": "Invoice uploaded and parsed",
-        "invoice_id": invoice.id,
+        "invoice_id": updated_invoice.id,
         "parsed_fields": parsed_fields,
         "file_location": file_url,
     }
@@ -177,24 +201,15 @@ async def get_all_invoices_paginated(
 ):
     if invoice_type not in {"expense", "sales"}:
         return {"ok": False, "message": "Invalid invoice type"}
-    from_dt = None
-    to_dt = None
-    try:
-        if from_date:
-            from_dt = datetime.strptime(from_date, "%Y-%m-%d")
-        if to_date:
-            to_dt = datetime.strptime(to_date, "%Y-%m-%d")
-    except ValueError:
-        return {"ok": False, "message": "Invalid date format. Use YYYY-MM-DD."}
 
-    if search or from_dt or to_dt:
+    if search or from_date or to_date:
         invoices = await invoices_crud.list_invoices_by_owner(
             db,
             owner_id=current_user.id,
             invoice_type=invoice_type,
             search=search,
-            from_date=from_dt,
-            to_date=to_dt,
+            from_date=from_date,
+            to_date=to_date,
             ignore_pagination=True,
         )
         return {"ok": True, "invoices": invoices}
@@ -271,9 +286,11 @@ async def get_invoice_file(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    # Extract filename/key from the stored URL
     filename = invoice.file_path.split("/")[-1]
-    file_obj = get_file_from_r2(filename)
+    if USE_CLOUD_STORAGE:
+        file_obj = get_file_from_r2(filename)
+    else:
+        file_obj = get_file_from_files_service(filename)
 
     if not file_obj:
         raise HTTPException(status_code=500, detail="Failed to fetch file from R2")
@@ -314,6 +331,7 @@ async def delete_invoice(
 
     return {"msg": "Invoice deleted", "invoice_id": invoice_id}
 
+
 @router.post("/extract-local/{invoice_type}")
 async def extract_invoice_local(
     invoice_type: str,
@@ -326,9 +344,15 @@ async def extract_invoice_local(
     safe_name = f"{uuid4().hex}_{invoice_type}_local{ext}"
     content = await file.read()
     loop = asyncio.get_event_loop()
-  
+
     parsed_fields = await loop.run_in_executor(None, process_with_qwen, content, ext)
-    file_url = await asyncio.to_thread(upload_to_r2_bytes, content, safe_name)
+    if USE_CLOUD_STORAGE:
+        file_url = await asyncio.to_thread(upload_to_r2_bytes, content, safe_name)
+    else:
+        file_url = await asyncio.to_thread(
+            upload_to_files_service_bytes, content, safe_name
+        )
+
     field_values = [
         parsed_fields.get("vendor_name"),
         parsed_fields.get("invoice_number"),

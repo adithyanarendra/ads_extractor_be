@@ -79,6 +79,7 @@ def process_invoice(file_bytes: bytes, file_ext: str) -> Dict[str, Any]:
         "error": None,
         "other_text": None,
         "line_items": [],
+        "description": None,
     }
 
     try:
@@ -126,7 +127,7 @@ You are a highly precise AI specialized in **UAE tax invoices**. Your goal is to
 - Example: if the date reads "12-08-25" but the year contextually should be 2025, correct it to "12-08-2025".
 - If the date is unclear or any digit is unreadable, return `null` instead of guessing.
 
-3. **Amounts (Decimals Required)**
+4. **Amounts (Decimals Required)**
 - **Always extract the numeric total as written on the invoice** first. Do not invent numbers. Example: if the invoice shows "1234.50", that is the `total`.
 - `before_tax_amount`: extract from invoice if available; otherwise, calculate as `total * 100 / 105` **only to verify consistency**.
 - `tax_amount`: extract from invoice if available; otherwise, calculate as `total - before_tax_amount` **only to verify consistency**.
@@ -135,13 +136,17 @@ You are a highly precise AI specialized in **UAE tax invoices**. Your goal is to
 - If still unclear or inconsistent, mark the relevant field `null`.
 - `currency`: AED, DHS, or the symbol seen.
 
-4. **Line Items**
+5. **Line Items**
 - Extract each line item if visible.
 - Each line item includes: `description`, `quantity`, `unit_price`, `amount`.
 - Amounts in line items should also include decimals (if present).
 - If no line items, return empty array.
 
-5. **Other Text**
+6. **Description**
+- Provide a concise 1–2 sentence human-readable summary of the invoice (vendor, date, total, and purpose if obvious). Do **not** invent facts.
+
+
+7. **Other Text**
 - Any extra text, notes, or remarks from the invoice.
 
 ---
@@ -166,6 +171,7 @@ Return **only one valid JSON object** exactly as below:
   "before_tax_amount": string | null,
   "tax_amount": string | null,
   "total": string | null,
+  "description": string | null,
   "currency": string | null,
   "line_items": [
     {
