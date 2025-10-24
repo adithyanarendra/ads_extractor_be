@@ -122,7 +122,7 @@ async def extract_invoice(
     all_null = all(v in [None, ""] for v in field_values)
 
     if all_null:
-        await invoices_crud.mark_invoice_failed(db, placeholder_invoice.id)
+        await invoices_crud.mark_invoice_failed(db, placeholder_invoice.id, file_url)
         return {
             "ok": False,
             "msg": "Invoice parsing failed, upload the document again",

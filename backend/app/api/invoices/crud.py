@@ -63,10 +63,9 @@ async def update_invoice_after_processing(
     return invoice
 
 
-async def mark_invoice_failed(db: AsyncSession, invoice_id: int):
-    """
-    Marks an invoice as processed but failed (still useful for debugging).
-    """
+async def mark_invoice_failed(
+    db: AsyncSession, invoice_id: int, file_path: str | None = None
+):
     stmt = select(invoices_models.Invoice).where(
         invoices_models.Invoice.id == invoice_id
     )
@@ -78,6 +77,8 @@ async def mark_invoice_failed(db: AsyncSession, invoice_id: int):
     invoice.is_processing = False
     invoice.remarks = "Parsing failed"
     invoice.extraction_status = "failed"
+    if file_path:
+        invoice.file_path = file_path
     await db.commit()
     return invoice
 
@@ -103,7 +104,7 @@ async def retry_invoice_extraction(
     invoice.description = parsed_fields.get("description")
     invoice.is_processing = False
     invoice.extraction_status = "success"
-    
+
     await db.commit()
     await db.refresh(invoice)
     return invoice
