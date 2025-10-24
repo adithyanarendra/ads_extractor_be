@@ -311,3 +311,15 @@ async def approve_user(
     await db.commit()
     await db.refresh(user)
     return {"ok": True, "msg": f"User {user.email} approved"}
+
+
+@router.post("/deactivate/{user_id}")
+async def deactivate_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin=Depends(auth.get_current_admin),
+):
+    user = await crud.deactivate_user(db, user_id, current_admin.id)
+    if not user:
+        return {"ok": False, "error": "User not found"}
+    return {"ok": True, "msg": f"User {user.email} deactivated (login revoked)"}

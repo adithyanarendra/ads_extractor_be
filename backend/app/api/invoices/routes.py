@@ -386,3 +386,64 @@ async def extract_invoice_local(
         "parsed_fields": parsed_fields,
         "file_location": file_url,
     }
+
+
+@router.post("/retry_extraction/{invoice_id}")
+async def retry_extraction(
+    invoice_id: int,
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    invoice = await invoices_crud.get_invoice_by_id_and_owner(
+        db, invoice_id, current_user.id
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if not invoice.file_path:
+        raise HTTPException(status_code=400, detail="Invoice file missing")
+
+    invoice.is_processing = True
+    invoice.extraction_status = "pending"
+    await db.commit()
+
+    filename = invoice.file_path.split("/")[-1]
+    if USE_CLOUD_STORAGE:
+        file_obj = get_file_from_r2(filename)
+    else:
+        file_obj = get_file_from_files_service(filename)
+
+    if not file_obj:
+        await invoices_crud.mark_invoice_failed(db, invoice_id)
+        raise HTTPException(status_code=500, detail="Failed to fetch invoice file")
+
+    content = file_obj.read()
+    ext = os.path.splitext(filename)[1]
+
+    loop = asyncio.get_event_loop()
+    parsed_fields = await loop.run_in_executor(None, process_invoice, content, ext)
+
+    field_values = [
+        parsed_fields.get("vendor_name"),
+        parsed_fields.get("invoice_number"),
+        parsed_fields.get("invoice_date"),
+        parsed_fields.get("trn_vat_number"),
+        parsed_fields.get("before_tax_amount"),
+        parsed_fields.get("tax_amount"),
+        parsed_fields.get("total"),
+    ]
+    all_null = all(v in [None, ""] for v in field_values)
+
+    if all_null:
+        await invoices_crud.mark_invoice_failed(db, invoice_id)
+        return {"ok": False, "msg": "Retry failed — extraction produced no fields"}
+
+    updated = await invoices_crud.retry_invoice_extraction(
+        db, invoice_id, parsed_fields
+    )
+    return {
+        "ok": True,
+        "msg": "Invoice extraction retried successfully",
+        "invoice_id": updated.id,
+        "parsed_fields": parsed_fields,
+    }

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from sqlalchemy import Column, String
@@ -33,3 +33,5 @@ class Invoice(Base):
     owner = relationship("User", back_populates="invoices")
 
     is_processing = Column(Boolean, default=False)
+    line_items = Column(JSON, nullable=True)
+    extraction_status = Column(String(20), nullable=True, default="pending")

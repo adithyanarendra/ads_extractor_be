@@ -140,3 +140,22 @@ async def update_user_fields(
     await db.commit()
     await db.refresh(user)
     return user
+
+
+async def deactivate_user(
+    db: AsyncSession, user_id: int, updated_by: int
+) -> Optional[users_models.User]:
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        return None
+
+    user.is_approved = False
+    now = datetime.datetime.utcnow()
+    user.updated_by = updated_by
+    user.last_updated_by = updated_by
+    user.updated_at = now
+    user.last_updated_at = now
+
+    await db.commit()
+    await db.refresh(user)
+    return user

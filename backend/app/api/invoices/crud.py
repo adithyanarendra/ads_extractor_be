@@ -18,7 +18,8 @@ async def create_processing_invoice(
         is_processing=True,
         reviewed=False,
         type=invoice_type,
-        file_path="",  # will be updated after upload
+        file_path="",
+        extraction_status="pending",
     )
     db.add(inv)
     await db.commit()
@@ -53,7 +54,9 @@ async def update_invoice_after_processing(
     invoice.total = parsed_fields.get("total")
     invoice.remarks = parsed_fields.get("remarks")
     invoice.description = parsed_fields.get("description")
+    invoice.line_items = parsed_fields.get("line_items")
     invoice.is_processing = False
+    invoice.extraction_status = "success"
 
     await db.commit()
     await db.refresh(invoice)
@@ -74,7 +77,35 @@ async def mark_invoice_failed(db: AsyncSession, invoice_id: int):
 
     invoice.is_processing = False
     invoice.remarks = "Parsing failed"
+    invoice.extraction_status = "failed"
     await db.commit()
+    return invoice
+
+
+async def retry_invoice_extraction(
+    db: AsyncSession, invoice_id: int, parsed_fields: Dict[str, Optional[str]]
+):
+    stmt = select(invoices_models.Invoice).where(
+        invoices_models.Invoice.id == invoice_id
+    )
+    result = await db.execute(stmt)
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        return None
+
+    invoice.vendor_name = parsed_fields.get("vendor_name")
+    invoice.invoice_number = parsed_fields.get("invoice_number")
+    invoice.invoice_date = parsed_fields.get("invoice_date")
+    invoice.trn_vat_number = parsed_fields.get("trn_vat_number")
+    invoice.before_tax_amount = parsed_fields.get("before_tax_amount")
+    invoice.tax_amount = parsed_fields.get("tax_amount")
+    invoice.total = parsed_fields.get("total")
+    invoice.description = parsed_fields.get("description")
+    invoice.is_processing = False
+    invoice.extraction_status = "success"
+    
+    await db.commit()
+    await db.refresh(invoice)
     return invoice
 
 

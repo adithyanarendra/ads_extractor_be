@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 
 
 class InvoiceBase(BaseModel):
@@ -15,6 +15,8 @@ class InvoiceBase(BaseModel):
     description: Optional[str] = None
     type: Optional[str] = None
     is_processing: Optional[bool] = False
+    line_items: Optional[List[Any]] = None
+    extraction_status: Optional[str] = None
 
 
 class InvoiceOut(InvoiceBase):
