@@ -4,6 +4,9 @@ from sqlalchemy import delete, or_, and_, desc
 from typing import Optional, Dict
 from . import models as invoices_models
 from datetime import datetime
+import asyncio
+from ...utils.ocr_parser import process_invoice
+from ...core.database import SessionLocal
 
 
 async def create_processing_invoice(
@@ -291,3 +294,48 @@ async def delete_invoice(db: AsyncSession, invoice_id: int, owner_id: int) -> bo
     )
     await db.commit()
     return True
+
+
+async def run_invoice_extraction(
+    invoice_id: int,
+    content: bytes,
+    ext: str,
+    invoice_type: str,
+    file_url: str,
+):
+    """
+    Run the invoice extraction process asynchronously for a given invoice ID.
+    Uses SessionLocal from your database.py for correct async context management.
+    """
+    async with SessionLocal() as db:
+        try:
+            parsed_fields = await asyncio.get_event_loop().run_in_executor(
+                None, process_invoice, content, ext
+            )
+
+            field_values = [
+                parsed_fields.get("vendor_name"),
+                parsed_fields.get("invoice_number"),
+                parsed_fields.get("invoice_date"),
+                parsed_fields.get("trn_vat_number"),
+                parsed_fields.get("before_tax_amount"),
+                parsed_fields.get("tax_amount"),
+                parsed_fields.get("total"),
+            ]
+            all_null = all(v in [None, ""] for v in field_values)
+
+            if all_null:
+                await mark_invoice_failed(db, invoice_id, file_url)
+                print(f"⚠️ Invoice {invoice_id} extraction failed — all fields empty.")
+                return
+
+            parsed_fields["type"] = invoice_type
+            await update_invoice_after_processing(
+                db, invoice_id, parsed_fields, file_url
+            )
+
+            print(f"✅ Invoice {invoice_id} extraction completed successfully.")
+
+        except Exception as e:
+            print(f"❌ Background extraction failed for invoice {invoice_id}: {e}")
+            await mark_invoice_failed(db, invoice_id, file_url)

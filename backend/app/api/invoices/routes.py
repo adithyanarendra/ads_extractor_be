@@ -1,10 +1,8 @@
-import shutil
 import asyncio
 import os
 from uuid import uuid4
-from datetime import datetime
 import mimetypes
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import and_, or_
@@ -106,44 +104,22 @@ async def extract_invoice(
 
     placeholder_invoice.file_path = file_url
     await db.commit()
+    await db.refresh(placeholder_invoice)
 
-    loop = asyncio.get_event_loop()
-    parsed_fields = await loop.run_in_executor(None, process_invoice, content, ext)
-
-    field_values = [
-        parsed_fields.get("vendor_name"),
-        parsed_fields.get("invoice_number"),
-        parsed_fields.get("invoice_date"),
-        parsed_fields.get("trn_vat_number"),
-        parsed_fields.get("before_tax_amount"),
-        parsed_fields.get("tax_amount"),
-        parsed_fields.get("total"),
-    ]
-    all_null = all(v in [None, ""] for v in field_values)
-
-    if all_null:
-        await invoices_crud.mark_invoice_failed(db, placeholder_invoice.id, file_url)
-        return {
-            "ok": False,
-            "msg": "Invoice parsing failed, upload the document again",
-            "invoice_id": placeholder_invoice.id,
-            "parsed_fields": parsed_fields,
-            "file_location": file_url,
-        }
-
-    parsed_fields["type"] = invoice_type
-    updated_invoice = await invoices_crud.update_invoice_after_processing(
-        db=db,
-        invoice_id=placeholder_invoice.id,
-        parsed_fields=parsed_fields,
-        file_url=file_url,
+    asyncio.create_task(
+        invoices_crud.run_invoice_extraction(
+            invoice_id=placeholder_invoice.id,
+            content=content,
+            ext=ext,
+            invoice_type=invoice_type,
+            file_url=file_url,
+        )
     )
 
     return {
         "ok": True,
-        "msg": "Invoice uploaded and parsed",
-        "invoice_id": updated_invoice.id,
-        "parsed_fields": parsed_fields,
+        "message": "Upload complete. Extraction started in background.",
+        "invoice_id": placeholder_invoice.id,
         "file_location": file_url,
     }
 
