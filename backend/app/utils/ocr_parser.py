@@ -67,7 +67,11 @@ def convert_pdf_to_images(file_bytes: bytes) -> List[Tuple[str, str]]:
         raise RuntimeError(f"Failed to convert PDF to images: {str(e)}")
 
 
-def process_invoice(file_bytes: bytes, file_ext: str) -> Dict[str, Any]:
+def process_invoice(file_bytes: bytes, file_ext: str, doc_type: str = "expense") -> Dict[str, Any]:
+    doc_type = (doc_type or "expense").lower()
+    if doc_type not in ("expense", "sales"):
+        doc_type = "expense"
+    print(f"[ocr_parser] Processing invoice with type={doc_type}")
     result = {
         "vendor_name": None,
         "invoice_number": None,
@@ -101,7 +105,18 @@ def process_invoice(file_bytes: bytes, file_ext: str) -> Dict[str, Any]:
 
         b64_image = base64.b64encode(file_bytes).decode("utf-8")
 
-        prompt = """
+        if doc_type == "sales":
+            role_note = """
+IMPORTANT: This is a SALES invoice (we sold to a customer).
+Whenever the instructions say "vendor" or "seller", TREAT THEM AS THE CUSTOMER.
+Map CUSTOMER name to `vendor_name` and CUSTOMER TRN/VAT to `trn_vat_number`.
+"""
+        else:
+            role_note = """
+This is an EXPENSE invoice (a bill from supplier/vendor). Extract supplier/vendor details normally.
+"""
+
+        prompt = role_note + """
 You are a highly precise AI specialized in **UAE tax invoices**. Your goal is to extract every important field **with maximum accuracy**. Time is not a concern — correctness is the top priority.
 
 ---

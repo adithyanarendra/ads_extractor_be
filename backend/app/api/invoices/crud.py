@@ -116,9 +116,13 @@ async def retry_invoice_extraction(
 async def create_invoice(
     db: AsyncSession, owner_id: int, file_path: str, fields: Dict[str, Optional[str]]
 ) -> invoices_models.Invoice:
+
+    invoice_hash = fields.pop("file_hash", None)
+
     inv = invoices_models.Invoice(
         owner_id=owner_id,
         file_path=file_path,
+        file_hash=invoice_hash,
         invoice_number=fields.get("invoice_number"),
         invoice_date=fields.get("invoice_date"),
         vendor_name=fields.get("vendor_name"),
@@ -302,6 +306,8 @@ async def run_invoice_extraction(
     ext: str,
     invoice_type: str,
     file_url: str,
+    file_hash: str,
+    is_duplicate: bool,
 ):
     """
     Run the invoice extraction process asynchronously for a given invoice ID.
@@ -310,9 +316,12 @@ async def run_invoice_extraction(
     async with SessionLocal() as db:
         try:
             parsed_fields = await asyncio.get_event_loop().run_in_executor(
-                None, process_invoice, content, ext
+                None, process_invoice, content, ext, invoice_type
             )
-
+            parsed_fields["type"] = invoice_type
+            parsed_fields["file_hash"] = file_hash
+            parsed_fields["is_duplicate"] = is_duplicate
+            
             field_values = [
                 parsed_fields.get("vendor_name"),
                 parsed_fields.get("invoice_number"),
@@ -329,7 +338,6 @@ async def run_invoice_extraction(
                 print(f"⚠️ Invoice {invoice_id} extraction failed — all fields empty.")
                 return
 
-            parsed_fields["type"] = invoice_type
             await update_invoice_after_processing(
                 db, invoice_id, parsed_fields, file_url
             )

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, List, Any
 
 
@@ -56,3 +56,6 @@ class ReviewPayload(BaseModel):
 
 class EditInvoiceFields(BaseModel):
     corrected_fields: Dict[str, Optional[str]]
+
+class HashCheckRequest(BaseModel):
+    file_hash: str = Field(..., description="SHA-256 hash of the file to check for duplicates")

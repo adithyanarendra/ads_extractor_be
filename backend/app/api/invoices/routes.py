@@ -1,15 +1,18 @@
+import select
+import shutil
 import asyncio
 import os
 from uuid import uuid4
 import mimetypes
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import APIRouter, Form, Depends, UploadFile, File, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import and_, or_
 from urllib.parse import urlparse
 from typing import Tuple
-
+import hashlib
 from ..retraining_model.data_processor import process_with_qwen
+from sqlalchemy import select
 
 from app.core import auth
 from ..users import models as users_models
@@ -24,6 +27,7 @@ from ...utils.r2 import (
     s3,
     R2_BUCKET,
 )
+from .models import Invoice
 from ...utils.files_service import (
     upload_to_files_service_bytes,
     get_file_from_files_service,
@@ -81,13 +85,14 @@ def parse_range(range_str: str) -> Tuple[int, int] | dict:
 async def extract_invoice(
     invoice_type: str,
     file: UploadFile = File(...),
+    file_hash: str = Form(None),
+    is_duplicate: bool = Form(False),
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     ext = os.path.splitext(file.filename)[1]
     safe_name = f"{uuid4().hex}{ext}"
     content = await file.read()
-
     placeholder_invoice = await invoices_crud.create_processing_invoice(
         db=db,
         owner_id=current_user.id,
@@ -113,6 +118,8 @@ async def extract_invoice(
             ext=ext,
             invoice_type=invoice_type,
             file_url=file_url,
+            file_hash=file_hash,
+            is_duplicate=is_duplicate,
         )
     )
 
@@ -321,7 +328,9 @@ async def extract_invoice_local(
     content = await file.read()
     loop = asyncio.get_event_loop()
 
-    parsed_fields = await loop.run_in_executor(None, process_with_qwen, content, ext)
+    parsed_fields = await loop.run_in_executor(
+        None, process_with_qwen, content, ext, invoice_type
+    )
     if USE_CLOUD_STORAGE:
         file_url = await asyncio.to_thread(upload_to_r2_bytes, content, safe_name)
     else:
@@ -364,6 +373,32 @@ async def extract_invoice_local(
     }
 
 
+@router.post("/check-duplicate")
+async def check_duplicate(
+    payload: invoices_schemas.HashCheckRequest,
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    file_hash = payload.file_hash.lower()
+
+    stmt = select(Invoice).where(
+        Invoice.owner_id == current_user.id, Invoice.file_hash == file_hash
+    )
+    result = await db.execute(stmt)
+    existing_invoice = result.scalars().first()
+
+    if existing_invoice:
+        return JSONResponse(
+            {
+                "is_duplicate": True,
+                "existing_invoice_id": existing_invoice.id,
+                "message": "Duplicate file found",
+            }
+        )
+
+    return JSONResponse({"is_duplicate": False, "existing_invoice_id": None})
+
+
 @router.post("/retry_extraction/{invoice_id}")
 async def retry_extraction(
     invoice_id: int,
@@ -397,7 +432,9 @@ async def retry_extraction(
     ext = os.path.splitext(filename)[1]
 
     loop = asyncio.get_event_loop()
-    parsed_fields = await loop.run_in_executor(None, process_invoice, content, ext)
+    parsed_fields = await loop.run_in_executor(
+        None, process_invoice, content, ext, invoice.type
+    )
 
     field_values = [
         parsed_fields.get("vendor_name"),

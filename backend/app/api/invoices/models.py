@@ -31,6 +31,8 @@ class Invoice(Base):
     batch = relationship("Batch", back_populates="invoices")
 
     owner = relationship("User", back_populates="invoices")
+    file_hash = Column(String(64), nullable=False, index=True)
+    is_duplicate = Column(Boolean, default=False, nullable=False)
 
     is_processing = Column(Boolean, default=False)
     line_items = Column(JSON, nullable=True)
