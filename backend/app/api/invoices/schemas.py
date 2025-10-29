@@ -55,7 +55,7 @@ class InvoiceTBRListResponse(BaseModel):
 class ReviewPayload(BaseModel):
     invoice_id: int
     reviewed: bool
-    corrected_fields: Optional[Dict[str, Optional[str]]] = None
+    corrected_fields: Optional[Dict[str, Any]] = None
 
 
 class EditInvoiceFields(BaseModel):

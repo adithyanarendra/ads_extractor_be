@@ -291,6 +291,12 @@ async def edit_invoice(
         if k in allowed:
             setattr(invoice, k, v)
 
+    if "has_tax_note" in corrected_fields and str(
+        corrected_fields["has_tax_note"]
+    ).lower() in ["false", "0", "none"]:
+        invoice.tax_note_type = None
+        invoice.tax_note_amount = None
+
     await db.commit()
     await db.refresh(invoice)
     return invoice
