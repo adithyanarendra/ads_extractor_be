@@ -37,3 +37,6 @@ class Invoice(Base):
     is_processing = Column(Boolean, default=False)
     line_items = Column(JSON, nullable=True)
     extraction_status = Column(String(20), nullable=True, default="pending")
+    has_tax_note = Column(Boolean, default=False)
+    tax_note_type = Column(String(20), nullable=True)
+    tax_note_amount = Column(String, nullable=True)

@@ -5,14 +5,14 @@ import os
 from uuid import uuid4
 import mimetypes
 from fastapi.responses import StreamingResponse, JSONResponse
-from fastapi import APIRouter, Form, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, Form, UploadFile, File, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import and_, or_
 from urllib.parse import urlparse
 from typing import Tuple
 import hashlib
 from ..retraining_model.data_processor import process_with_qwen
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.core import auth
 from ..users import models as users_models
@@ -81,6 +81,18 @@ def parse_range(range_str: str) -> Tuple[int, int] | dict:
         }
 
 
+@router.get("/analytics")
+async def get_invoice_analytics(
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        data = await invoices_crud.get_invoice_analytics(db, current_user.id)
+        return {"ok": True, "message": "Analytics fetched successfully", "data": data}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @router.post("/extract/{invoice_type}")
 async def extract_invoice(
     invoice_type: str,
@@ -129,7 +141,6 @@ async def extract_invoice(
         "invoice_id": placeholder_invoice.id,
         "file_location": file_url,
     }
-
 
 @router.post("/request_review")
 async def request_review(
@@ -195,7 +206,8 @@ async def get_all_invoices_paginated(
             to_date=to_date,
             ignore_pagination=True,
         )
-        return {"ok": True, "invoices": invoices}
+        total_count = len(invoices)
+        return {"ok": True, "invoices": invoices, "total_count": total_count}
 
     parsed = parse_range(range_str)
     if isinstance(parsed, dict):  # error
@@ -212,7 +224,16 @@ async def get_all_invoices_paginated(
         limit=limit,
         offset=offset,
     )
-    return {"ok": True, "invoices": invoices}
+
+    total_stmt = select(func.count(Invoice.id)).where(
+        Invoice.owner_id == current_user.id,
+        Invoice.batch_id.is_(None),
+        Invoice.type == invoice_type,
+    )
+    total_result = await db.execute(total_stmt)
+    total_count = total_result.scalar() or 0
+
+    return {"ok": True, "invoices": invoices, "total_count": total_count}
 
 
 @router.get("/to_be_reviewed", response_model=invoices_schemas.InvoiceTBRListResponse)

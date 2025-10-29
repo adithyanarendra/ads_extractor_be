@@ -17,6 +17,9 @@ class InvoiceBase(BaseModel):
     is_processing: Optional[bool] = False
     line_items: Optional[List[Any]] = None
     extraction_status: Optional[str] = None
+    has_tax_note: Optional[bool] = False
+    tax_note_type: Optional[str] = None
+    tax_note_amount: Optional[float] = None
 
 
 class InvoiceOut(InvoiceBase):
@@ -27,6 +30,7 @@ class InvoiceOut(InvoiceBase):
 class InvoiceListResponse(BaseModel):
     ok: bool
     invoices: List[InvoiceOut]
+    total_count: int
 
     class Config:
         orm_mode = True
@@ -55,7 +59,10 @@ class ReviewPayload(BaseModel):
 
 
 class EditInvoiceFields(BaseModel):
-    corrected_fields: Dict[str, Optional[str]]
+    corrected_fields: Dict[str, Any]
+
 
 class HashCheckRequest(BaseModel):
-    file_hash: str = Field(..., description="SHA-256 hash of the file to check for duplicates")
+    file_hash: str = Field(
+        ..., description="SHA-256 hash of the file to check for duplicates"
+    )

@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import delete, or_, and_, desc
+from sqlalchemy import delete, or_, and_, desc, func, Float
+import re
 from typing import Optional, Dict
 from . import models as invoices_models
 from datetime import datetime
@@ -278,6 +279,9 @@ async def edit_invoice(
         "remarks",
         "description",
         "type",
+        "has_tax_note",
+        "tax_note_type",
+        "tax_note_amount",
     }
     for k, v in corrected_fields.items():
         if k in allowed:
@@ -321,7 +325,7 @@ async def run_invoice_extraction(
             parsed_fields["type"] = invoice_type
             parsed_fields["file_hash"] = file_hash
             parsed_fields["is_duplicate"] = is_duplicate
-            
+
             field_values = [
                 parsed_fields.get("vendor_name"),
                 parsed_fields.get("invoice_number"),
@@ -347,3 +351,82 @@ async def run_invoice_extraction(
         except Exception as e:
             print(f"❌ Background extraction failed for invoice {invoice_id}: {e}")
             await mark_invoice_failed(db, invoice_id, file_url)
+
+
+def sanitize_total(value):
+    """Extracts numeric value from string safely."""
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    # Remove commas and non-numeric characters except dot
+    clean = re.sub(r"[^0-9.]", "", str(value))
+    try:
+        return float(clean) if clean else 0.0
+    except ValueError:
+        return 0.0
+
+
+async def get_invoice_analytics(db: AsyncSession, owner_id: int):
+    """Returns analytics summary for invoices owned by the user."""
+
+    # Fetch all invoices once and sanitize totals in Python
+    invoices_query = select(
+        invoices_models.Invoice.type,
+        invoices_models.Invoice.total,
+        invoices_models.Invoice.vendor_name,
+    ).where(invoices_models.Invoice.owner_id == owner_id)
+    result = await db.execute(invoices_query)
+    invoices = result.all()
+
+    if not invoices:
+        return {
+            "sales_count": 0,
+            "total_sales_amount": 0.0,
+            "expense_count": 0,
+            "total_expense_amount": 0.0,
+            "total_invoices": 0,
+            "num_customers": 0,
+            "num_vendors": 0,
+            "top_customer": {"name": None, "amount": 0.0},
+            "top_vendor": {"name": None, "amount": 0.0},
+        }
+
+    sales = []
+    expenses = []
+
+    for inv in invoices:
+        amount = sanitize_total(inv.total)
+        if inv.type == "sales":
+            sales.append((inv.vendor_name, amount))
+        elif inv.type == "expense":
+            expenses.append((inv.vendor_name, amount))
+
+    # Summaries
+    total_sales_amount = sum(a for _, a in sales)
+    total_expense_amount = sum(a for _, a in expenses)
+
+    from collections import Counter
+
+    # Top customer/vendor
+    customer_totals = Counter()
+    for name, amount in sales:
+        customer_totals[name] += amount
+    top_customer = customer_totals.most_common(1)[0] if customer_totals else (None, 0)
+
+    vendor_totals = Counter()
+    for name, amount in expenses:
+        vendor_totals[name] += amount
+    top_vendor = vendor_totals.most_common(1)[0] if vendor_totals else (None, 0)
+
+    return {
+        "sales_count": len(sales),
+        "total_sales_amount": round(total_sales_amount, 2),
+        "expense_count": len(expenses),
+        "total_expense_amount": round(total_expense_amount, 2),
+        "total_invoices": len(invoices),
+        "num_customers": len(set(n for n, _ in sales if n)),
+        "num_vendors": len(set(n for n, _ in expenses if n)),
+        "top_customer": {"name": top_customer[0], "amount": round(top_customer[1], 2)},
+        "top_vendor": {"name": top_vendor[0], "amount": round(top_vendor[1], 2)},
+    }
