@@ -47,7 +47,6 @@ async def update_invoice_after_processing(
     invoice = result.scalar_one_or_none()
     if not invoice:
         return None
-
     invoice.file_path = file_url
     invoice.vendor_name = parsed_fields.get("vendor_name")
     invoice.invoice_number = parsed_fields.get("invoice_number")
@@ -59,6 +58,8 @@ async def update_invoice_after_processing(
     invoice.remarks = parsed_fields.get("remarks")
     invoice.description = parsed_fields.get("description")
     invoice.line_items = parsed_fields.get("line_items")
+    invoice.file_hash = parsed_fields.get("file_hash")
+    invoice.is_duplicate = parsed_fields.get("is_duplicate")
     invoice.is_processing = False
     invoice.extraction_status = "success"
 
@@ -249,6 +250,9 @@ async def update_invoice_review(
             "remarks",
             "description",
             "type",
+            "has_tax_note",
+            "tax_note_type",
+            "tax_note_amount",
         }
         for k, v in corrected_fields.items():
             if k in allowed:

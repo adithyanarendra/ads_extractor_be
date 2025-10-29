@@ -36,10 +36,3 @@ class User(Base):
     batches = relationship(
         "Batch", back_populates="owner", cascade="all, delete-orphan"
     )
-
-    documents = relationship(
-        "UserDocs",
-        back_populates="user",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
