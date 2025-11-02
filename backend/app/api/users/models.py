@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from ...core.database import Base
+from ..user_docs.models import UserDocs
 
 
 class User(Base):
@@ -35,4 +36,11 @@ class User(Base):
 
     batches = relationship(
         "Batch", back_populates="owner", cascade="all, delete-orphan"
+    )
+
+    documents = relationship(
+        "UserDocs",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )

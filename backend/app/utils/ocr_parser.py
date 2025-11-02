@@ -48,6 +48,14 @@ def clean_amount(value: Optional[str]) -> Optional[str]:
     value = value.replace(",", "")
     return value.strip() or None
 
+def to_two_decimals(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        return f"{float(value):.2f}"
+    except ValueError:
+        return None
+
 
 def convert_pdf_to_images(file_bytes: bytes) -> List[Tuple[str, str]]:
     """
@@ -241,9 +249,9 @@ Return **only one valid JSON object** exactly as below:
                 if key in fields:
                     result[key] = fields[key]
             result["invoice_date"] = normalize_date(result.get("invoice_date"))
-            result["before_tax_amount"] = clean_amount(result.get("before_tax_amount"))
-            result["tax_amount"] = clean_amount(result.get("tax_amount"))
-            result["total"] = clean_amount(result.get("total"))
+            result["before_tax_amount"] = to_two_decimals(clean_amount(result.get("before_tax_amount")))
+            result["tax_amount"]        = to_two_decimals(clean_amount(result.get("tax_amount")))
+            result["total"]             = to_two_decimals(clean_amount(result.get("total")))
 
         except json.JSONDecodeError as e:
             result["error"] = f"Failed to parse GPT response: {str(e)}"

@@ -5,7 +5,15 @@ import os
 from uuid import uuid4
 import mimetypes
 from fastapi.responses import StreamingResponse, JSONResponse
-from fastapi import APIRouter, Depends, Form, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    UploadFile,
+    File,
+    HTTPException,
+    BackgroundTasks,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import and_, or_
 from urllib.parse import urlparse
@@ -28,6 +36,7 @@ from ...utils.r2 import (
     R2_BUCKET,
 )
 from .models import Invoice
+from .schemas import InvoiceDeleteRequest
 from ...utils.files_service import (
     upload_to_files_service_bytes,
     get_file_from_files_service,
@@ -141,6 +150,7 @@ async def extract_invoice(
         "invoice_id": placeholder_invoice.id,
         "file_location": file_url,
     }
+
 
 @router.post("/request_review")
 async def request_review(
@@ -308,32 +318,41 @@ async def get_invoice_file(
 
 @router.delete("/delete")
 async def delete_invoice(
-    invoice_id: int,
+    payload: InvoiceDeleteRequest,
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    invoice = await invoices_crud.get_invoice_by_id_and_owner(
-        db, invoice_id, current_user.id
+    invoice_ids = payload.invoice_ids
+
+    if not invoice_ids:
+        raise HTTPException(status_code=400, detail="No invoice IDs provided")
+
+    invoices = await invoices_crud.get_invoices_by_ids_and_owner(
+        db, invoice_ids, current_user.id
     )
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
 
-    file_url = invoice.file_path
+    if not invoices:
+        raise HTTPException(status_code=404, detail="No invoices found")
 
-    did = await invoices_crud.delete_invoice(db, invoice_id, current_user.id)
-    if not did:
-        raise HTTPException(status_code=404, detail="Invoice not found or not deleted")
+    file_paths = [inv.file_path for inv in invoices if inv.file_path]
 
-    if file_url:
+    deleted_count = await invoices_crud.delete_invoices(
+        db, invoice_ids, current_user.id
+    )
+
+    for path in file_paths:
         try:
-            # Extract the object key from URL
-            parsed = urlparse(file_url)
-            key = parsed.path.lstrip("/")  # remove leading /
+            parsed = urlparse(path)
+            key = parsed.path.lstrip("/")
             s3.delete_object(Bucket=R2_BUCKET, Key=key)
         except Exception as e:
-            print(f"Error deleting file from R2 {file_url}: {e}")
+            print(f"Error deleting file from R2 {path}: {e}")
 
-    return {"msg": "Invoice deleted", "invoice_id": invoice_id}
+    return {
+        "ok": True,
+        "msg": f"{deleted_count} invoice(s) deleted",
+        "invoice_ids": invoice_ids,
+    }
 
 
 @router.post("/extract-local/{invoice_type}")

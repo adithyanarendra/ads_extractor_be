@@ -40,7 +40,6 @@ def upload_to_r2_bytes(content: bytes, filename: str) -> str:
         **extra_args,
     )
 
-    # Return the public-accessible URL
     return f"https://pub-{ACCOUNT_HASH}.r2.dev/{filename}"
 
 

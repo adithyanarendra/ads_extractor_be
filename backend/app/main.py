@@ -9,8 +9,7 @@ from .api.users import routes as users_routes
 from .api.invoices import routes as invoices_routes
 from .api.companies import routes as companies_routes
 from app.api.batches.routes import router as batches_router
-from app.api.batches import models as batches_models
-from app.api.invoices import models as invoices_models
+from .api.user_docs.routes import router as user_docs_router
 
 app = FastAPI(title="FastAPI Invoice OCR")
 
@@ -20,8 +19,8 @@ origins = [
     "http://127.0.0.1:5173",
     "http://localhost:3000",  # React default dev server
     "http://127.0.0.1:3000",
-    "https://ads-extractor-fe.onrender.com", #render fe
-    "https://aicountant.tech", #hostinger fe
+    "https://ads-extractor-fe.onrender.com",  # render fe
+    "https://aicountant.tech",  # hostinger fe
     "49.43.169.79",
 ]
 
@@ -38,7 +37,7 @@ app.include_router(invoices_routes.router)
 app.include_router(companies_routes.router)
 app.include_router(lov_router)
 app.include_router(batches_router)
-
+app.include_router(user_docs_router)
 
 
 @app.get("/")

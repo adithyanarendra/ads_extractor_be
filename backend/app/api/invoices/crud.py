@@ -222,6 +222,7 @@ async def list_invoices_to_review_by_owner(db: AsyncSession, owner_id: int):
     stmt = select(invoices_models.Invoice.id, invoices_models.Invoice.file_path).where(
         invoices_models.Invoice.owner_id == owner_id,
         invoices_models.Invoice.reviewed == False,
+        invoices_models.Invoice.extraction_status == "success",
     )
     result = await db.execute(stmt)
     return [{"id": row.id, "file_path": row.file_path} for row in result.all()]
@@ -302,8 +303,19 @@ async def edit_invoice(
     return invoice
 
 
+async def get_invoices_by_ids_and_owner(
+    db: AsyncSession, ids: list[int], owner_id: int
+):
+    result = await db.execute(
+        select(invoices_models.Invoice).where(
+            invoices_models.Invoice.id.in_(ids),
+            invoices_models.Invoice.owner_id == owner_id,
+        )
+    )
+    return result.scalars().all()
+
+
 async def delete_invoice(db: AsyncSession, invoice_id: int, owner_id: int) -> bool:
-    # Use SQL delete for simplicity
     await db.execute(
         delete(invoices_models.Invoice).where(
             invoices_models.Invoice.id == invoice_id,
@@ -312,6 +324,21 @@ async def delete_invoice(db: AsyncSession, invoice_id: int, owner_id: int) -> bo
     )
     await db.commit()
     return True
+
+
+async def delete_invoices(db: AsyncSession, ids: list[int], owner_id: int) -> int:
+    result = await db.execute(
+        delete(invoices_models.Invoice)
+        .where(
+            invoices_models.Invoice.id.in_(ids),
+            invoices_models.Invoice.owner_id == owner_id,
+        )
+        .returning(invoices_models.Invoice.id)
+    )
+
+    deleted = result.scalars().all()
+    await db.commit()
+    return len(deleted)
 
 
 async def run_invoice_extraction(

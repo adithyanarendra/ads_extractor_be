@@ -1,5 +1,30 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, List, Any
+from pydantic import validator
+from datetime import datetime
+
+
+def _normalize_to_ddmmyyyy(s: Optional[str]) -> Optional[str]:
+    if not s:
+        return None
+    s = str(s).strip().replace("/", "-")
+    for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%m-%d-%Y"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt.strftime("%d-%m-%Y")
+        except ValueError:
+            pass
+    return s  # keep original if unparseable
+
+def _normalize_dates_in_dict(d: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(d, dict):
+        return d
+    out = dict(d)
+    for k, v in list(out.items()):
+        if isinstance(v, str) and (k == "invoice_date" or k.endswith("_date")):
+            out[k] = _normalize_to_ddmmyyyy(v)
+    return out
+
 
 
 class InvoiceBase(BaseModel):
@@ -20,6 +45,11 @@ class InvoiceBase(BaseModel):
     has_tax_note: Optional[bool] = False
     tax_note_type: Optional[str] = None
     tax_note_amount: Optional[float] = None
+    
+    @validator("invoice_date", pre=True)
+    def _norm_invoice_date(cls, v):
+        return _normalize_to_ddmmyyyy(v)
+
 
 
 class InvoiceOut(InvoiceBase):
@@ -57,12 +87,24 @@ class ReviewPayload(BaseModel):
     reviewed: bool
     corrected_fields: Optional[Dict[str, Any]] = None
 
+    @validator("corrected_fields", pre=True)
+    def _norm_corrected_fields(cls, v):
+        return _normalize_dates_in_dict(v)
+
 
 class EditInvoiceFields(BaseModel):
     corrected_fields: Dict[str, Any]
+
+    @validator("corrected_fields", pre=True)
+    def _norm_edit_fields(cls, v):
+        return _normalize_dates_in_dict(v)
 
 
 class HashCheckRequest(BaseModel):
     file_hash: str = Field(
         ..., description="SHA-256 hash of the file to check for duplicates"
     )
+
+
+class InvoiceDeleteRequest(BaseModel):
+    invoice_ids: List[int]
