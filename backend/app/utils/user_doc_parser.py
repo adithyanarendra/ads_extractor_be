@@ -1,5 +1,6 @@
 import os, base64, mimetypes, json, re
 from dateutil import parser as date_parser
+from datetime import datetime
 from openai import OpenAI
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +24,21 @@ def normalize_date(date_str: str):
         return dt
     except:
         return None
+
+
+def parse_date(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(value)
+    except:
+        # handle other formats if API returns differently
+        try:
+            return datetime.strptime(value, "%Y-%m-%d")
+        except:
+            return None
 
 
 async def extract_document_meta(
@@ -78,7 +94,8 @@ async def extract_document_meta(
         for field in allowed_fields:
             value = data.get(field)
             if value is not None:
-                if "date" in field or "period" in field:
+                # Handle date-like fields safely
+                if any(s in field for s in ["date", "period", "since", "expiry"]):
                     setattr(doc, field, normalize_date(value))
                 else:
                     setattr(doc, field, value)

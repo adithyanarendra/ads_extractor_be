@@ -4,6 +4,7 @@ from sqlalchemy.sql import func
 
 from ...core.database import Base
 from ..user_docs.models import UserDocs
+from ..reports.models import Report
 
 
 class User(Base):
@@ -43,4 +44,8 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
         passive_deletes=True,
+    )
+
+    reports = relationship(
+        "Report", back_populates="user", cascade="all, delete-orphan"
     )

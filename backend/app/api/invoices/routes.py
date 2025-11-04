@@ -1,5 +1,4 @@
 import select
-import shutil
 import asyncio
 import os
 from uuid import uuid4
@@ -18,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import and_, or_
 from urllib.parse import urlparse
 from typing import Tuple
-import hashlib
 from ..retraining_model.data_processor import process_with_qwen
 from sqlalchemy import select, func
 
