@@ -2,6 +2,7 @@ from sqlalchemy import select, func, cast, Numeric
 from .models import Report
 from ..invoices.models import Invoice
 from ..user_docs.models import UserDocs
+from ..batches.crud import get_invoice_ids_for_batch
 
 
 async def get_vat_summary(db, user_id: int):
@@ -72,6 +73,23 @@ async def get_vat_summary(db, user_id: int):
         )
         total_vat_to_pay = total_vat_output - total_vat_input
 
+        std_totals_query = await db.execute(
+            select(
+                func.sum(cast(Invoice.before_tax_amount, Numeric)).label("std_total"),
+                Invoice.type,
+            )
+            .where(Invoice.owner_id == user_id, Invoice.reviewed == True)
+            .group_by(Invoice.type)
+        )
+
+        std_totals = std_totals_query.all()
+        standard_rated_expense = (
+            sum([s.std_total for s in std_totals if s.type == "expense"]) or 0
+        )
+        standard_rated_sales = (
+            sum([s.std_total for s in std_totals if s.type == "sales"]) or 0
+        )
+
         return {
             "ok": True,
             "message": "VAT summary fetched successfully",
@@ -80,6 +98,8 @@ async def get_vat_summary(db, user_id: int):
                 "company_details": company_details,
                 "sales_invoices": sales_invoices,
                 "expense_invoices": expense_invoices,
+                "standard_rated_expense": str(standard_rated_expense),
+                "standard_rated_sales": str(standard_rated_sales),
                 "total_vat_input": str(total_vat_input),
                 "total_vat_output": str(total_vat_output),
                 "total_vat_to_pay": str(total_vat_to_pay),
@@ -90,6 +110,146 @@ async def get_vat_summary(db, user_id: int):
         return {
             "ok": False,
             "message": "Unexpected error while generating VAT summary",
+            "error": str(e),
+            "data": None,
+        }
+
+
+async def get_vat_summary_by_batch(db, user_id: int, batch_id: int):
+    try:
+        vat_doc = await db.execute(
+            select(
+                UserDocs.vat_legal_name_arabic,
+                UserDocs.vat_legal_name_english,
+                UserDocs.vat_tax_registration_number,
+            ).where(
+                UserDocs.user_id == user_id,
+                UserDocs.vat_tax_registration_number.isnot(None),
+            )
+        )
+        company = vat_doc.fetchone()
+
+        company_details = {
+            "vat_legal_name_arabic": company.vat_legal_name_arabic if company else None,
+            "vat_legal_name_english": (
+                company.vat_legal_name_english if company else None
+            ),
+            "vat_tax_registration_number": (
+                company.vat_tax_registration_number if company else None
+            ),
+        }
+
+        if not company:
+            return {
+                "ok": False,
+                "message": "VAT certificate not found for user",
+                "error": "VAT certificate missing",
+                "data": None,
+            }
+
+        batch_res = await get_invoice_ids_for_batch(db, batch_id, owner_id=user_id)
+        if not batch_res.get("ok"):
+            return {
+                "ok": False,
+                "message": "Batch not found",
+                "error": "NOT_FOUND",
+                "data": None,
+            }
+
+        invoice_ids = batch_res["data"]["invoice_ids"]
+        if not invoice_ids:
+            return {
+                "ok": False,
+                "message": "No invoices inside the batch",
+                "error": "EMPTY_BATCH",
+                "data": None,
+            }
+
+        invoice_query = select(
+            Invoice.invoice_number,
+            Invoice.invoice_date,
+            Invoice.vendor_name,
+            Invoice.trn_vat_number,
+            Invoice.before_tax_amount,
+            Invoice.tax_amount,
+            Invoice.total,
+            Invoice.remarks,
+            Invoice.type,
+        ).where(
+            Invoice.owner_id == user_id,
+            Invoice.reviewed == True,
+            Invoice.id.in_(invoice_ids),
+        )
+
+        invoices = (await db.execute(invoice_query)).mappings().all()
+
+        sales_invoices = [i for i in invoices if i["type"] == "sales"]
+        expense_invoices = [i for i in invoices if i["type"] == "expense"]
+
+        tax_sum_query = await db.execute(
+            select(
+                func.sum(cast(Invoice.tax_amount, Numeric)).label("tax_sum"),
+                Invoice.type,
+            )
+            .where(
+                Invoice.owner_id == user_id,
+                Invoice.reviewed == True,
+                Invoice.id.in_(invoice_ids),
+            )
+            .group_by(Invoice.type)
+        )
+
+        tax_totals = tax_sum_query.all()
+        total_vat_input = (
+            sum([t.tax_sum for t in tax_totals if t.type == "expense"]) or 0
+        )
+        total_vat_output = (
+            sum([t.tax_sum for t in tax_totals if t.type == "sales"]) or 0
+        )
+
+        total_vat_to_pay = total_vat_output - total_vat_input
+
+        std_totals_query = await db.execute(
+            select(
+                func.sum(cast(Invoice.before_tax_amount, Numeric)).label("std_total"),
+                Invoice.type,
+            )
+            .where(
+                Invoice.owner_id == user_id,
+                Invoice.reviewed == True,
+                Invoice.id.in_(invoice_ids),
+            )
+            .group_by(Invoice.type)
+        )
+
+        std_totals = std_totals_query.all()
+        standard_rated_expense = (
+            sum([s.std_total for s in std_totals if s.type == "expense"]) or 0
+        )
+        standard_rated_sales = (
+            sum([s.std_total for s in std_totals if s.type == "sales"]) or 0
+        )
+
+        return {
+            "ok": True,
+            "message": "VAT batch summary fetched successfully",
+            "error": None,
+            "data": {
+                "company_details": company_details,
+                "sales_invoices": sales_invoices,
+                "expense_invoices": expense_invoices,
+                "standard_rated_expense": str(standard_rated_expense),
+                "standard_rated_sales": str(standard_rated_sales),
+                "total_vat_input": str(total_vat_input),
+                "total_vat_output": str(total_vat_output),
+                "total_vat_to_pay": str(total_vat_to_pay),
+            },
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "message": "Unexpected error while generating VAT batch summary",
             "error": str(e),
             "data": None,
         }

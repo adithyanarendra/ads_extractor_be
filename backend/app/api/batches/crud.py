@@ -1,14 +1,15 @@
 import io
 import zipfile
 import csv
-from ...utils.r2 import get_file_from_r2
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
+from calendar import month_abbr
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 from . import models
-from app.api.invoices.models import Invoice
+from ...utils.r2 import get_file_from_r2
+from ..invoices.models import Invoice
 from ..invoices.crud import get_invoice_by_id_and_owner
 
 
@@ -343,3 +344,56 @@ async def get_invoice_ids_for_batch(
         )
     except Exception as e:
         return _err("Failed to fetch invoice IDs.", str(e))
+
+
+MONTH_MAP = {m.lower(): i for i, m in enumerate(month_abbr) if m}
+
+
+def parse_batch_range(batch_name: str):
+    """
+    Parse batch name like 'Feb - Apr 2025' → (2, 4, 2025)
+    """
+    try:
+        parts = batch_name.split()
+        if len(parts) < 3:
+            return None
+
+        months = [p for p in parts if p.strip("-").isalpha()]
+        year = int(parts[-1])
+        if len(months) != 2:
+            return None
+        start_month = MONTH_MAP.get(months[0][:3].lower())
+        end_month = MONTH_MAP.get(months[1][:3].lower())
+        return (start_month, end_month, year)
+    except Exception:
+        return None
+
+
+async def find_matching_batch_for_invoice(
+    db: AsyncSession, owner_id: int, invoice_date: str
+):
+    """Return a batch ID if a matching month-year batch exists"""
+    try:
+        if not invoice_date:
+            return None
+        from datetime import datetime
+
+        date_obj = datetime.strptime(invoice_date, "%d-%m-%Y")
+        inv_month, inv_year = date_obj.month, date_obj.year
+
+        result = await db.execute(
+            select(models.Batch).where(models.Batch.owner_id == owner_id)
+        )
+        batches = result.scalars().all()
+
+        for b in batches:
+            parsed = parse_batch_range(b.name)
+            if not parsed:
+                continue
+            start_m, end_m, yr = parsed
+            if yr == inv_year and start_m <= inv_month <= end_m:
+                return b.id
+        return None
+    except Exception as e:
+        print("⚠️ find_matching_batch_for_invoice error:", e)
+        return None

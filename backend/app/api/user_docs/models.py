@@ -48,6 +48,10 @@ class UserDocs(Base):
     vat_license_number = Column(String, nullable=True)
     vat_date_of_issue = Column(DateTime(timezone=True), nullable=True)
     vat_version_number = Column(String, nullable=True)
+    vat_batch_one = Column(String, nullable=True)
+    vat_batch_two = Column(String, nullable=True)
+    vat_batch_three = Column(String, nullable=True)
+    vat_batch_four = Column(String, nullable=True)
 
     # Corporate Tax Certificate fields
     ct_certificate_title = Column(String, nullable=True)
@@ -89,3 +93,17 @@ class UserDocs(Base):
     tl_issue_date = Column(DateTime(timezone=True), nullable=True)
     tl_expiry_date = Column(DateTime(timezone=True), nullable=True)
     tl_membership_since = Column(DateTime(timezone=True), nullable=True)
+
+    # Passport fields
+    passport_number = Column(String, nullable=True)
+    passport_name = Column(String, nullable=True)
+    passport_date_of_birth = Column(DateTime(timezone=True), nullable=True)
+    passport_issue_date = Column(DateTime(timezone=True), nullable=True)
+    passport_expiry_date = Column(DateTime(timezone=True), nullable=True)
+
+    # Emirates ID fields
+    emirates_id_number = Column(String, nullable=True)
+    emirates_id_name = Column(String, nullable=True)
+    emirates_id_date_of_birth = Column(DateTime(timezone=True), nullable=True)
+    emirates_id_issue_date = Column(DateTime(timezone=True), nullable=True)
+    emirates_id_expiry_date = Column(DateTime(timezone=True), nullable=True)

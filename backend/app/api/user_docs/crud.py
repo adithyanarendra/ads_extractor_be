@@ -1,4 +1,7 @@
 import os
+import re
+from dateutil import parser
+from dateutil.relativedelta import relativedelta
 from fastapi import UploadFile, HTTPException, status
 from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
@@ -11,6 +14,7 @@ from typing import Optional, List
 from ...core.database import SessionLocal
 from .models import UserDocs
 from ..users.crud import get_user_by_id
+from ..batches import crud as batches_crud
 from ...utils.r2 import upload_to_r2_bytes, get_file_from_r2
 from ...utils.user_doc_parser import extract_document_meta
 
@@ -201,6 +205,16 @@ async def process_doc_metadata(doc_id, file_bytes, doc_type: str):
             db=db, doc_id=doc_id, file_bytes=file_bytes, doc_type=doc_type
         )
 
+        # new
+        result = await db.execute(select(UserDocs).where(UserDocs.id == doc_id))
+        doc = result.scalar_one_or_none()
+        if not doc:
+            return
+
+        # 3) Only for VAT certificate: auto-create batches
+        if doc.file_name == "vat_certificate":
+            await _autocreate_vat_batches_for_doc(db, doc)
+
 
 async def get_user_doc_details(db: AsyncSession, user_id: int, doc_type: str):
     """Return metadata details for a specific uploaded document (no file streaming)."""
@@ -232,3 +246,63 @@ async def get_user_doc_details(db: AsyncSession, user_id: int, doc_type: str):
         "message": "Document metadata retrieved successfully",
         "data": Schema.from_orm(doc).dict(),
     }
+
+
+async def _autocreate_vat_batches_for_doc(db: AsyncSession, doc: UserDocs):
+    """
+    Create batches for non-null VAT periods using the exact extracted string as the batch name.
+    - Creates only if the value exists (skip nulls)
+    - No duplicates: relies on batches.crud.create_batch duplicate check
+    - Do NOT lock automatically
+    """
+    owner_id = doc.user_id
+
+    period_names = [
+        doc.vat_batch_one,
+        doc.vat_batch_two,
+        doc.vat_batch_three,
+        doc.vat_batch_four,
+    ]
+
+    for name in period_names:
+        if not name:
+            continue
+        await batches_crud.create_batch(
+            db, name=name, owner_id=owner_id, invoice_ids=None
+        )
+
+
+def _generate_month_list(period_str: str) -> list[str]:
+    """
+    Convert 'Feb - Apr 2025' into ['Feb 2025', 'Mar 2025', 'Apr 2025']
+    Supports formats like:
+      - Jan - Mar 2025
+      - Jan 2025 - Mar 2025
+      - 01/02/2025 - 31/03/2025 (if needed later)
+    """
+    # Extract months and year
+    # Example match groups: 'Feb', 'Apr', '2025'
+    pattern = r"([A-Za-z]{3,})\s?-?\s?([A-Za-z]{3,})?\s?(\d{4})"
+    match = re.findall(pattern, period_str)
+
+    if not match:
+        return []
+
+    start_month, end_month, year = match[0]
+    year = int(year)
+
+    # If only one month (means no range)
+    if not end_month:
+        return [f"{start_month} {year}"]
+
+    start_date = parser.parse(f"1 {start_month} {year}")
+    end_date = parser.parse(f"1 {end_month} {year}")
+
+    months = []
+    current = start_date
+
+    while current <= end_date:
+        months.append(current.strftime("%b %Y"))
+        current += relativedelta(months=1)
+
+    return months

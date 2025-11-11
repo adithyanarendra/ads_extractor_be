@@ -11,21 +11,21 @@ from fastapi import (
     UploadFile,
     File,
     HTTPException,
-    BackgroundTasks,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import and_, or_
+from sqlalchemy import select, func, update
 from urllib.parse import urlparse
 from typing import Tuple
-from ..retraining_model.data_processor import process_with_qwen
-from sqlalchemy import select, func
 
-from app.core import auth
-from ..users import models as users_models
-from ..users import crud as users_crud
+from ...core import auth
+from ...core.database import get_db
+from .models import Invoice
 from . import schemas as invoices_schemas
 from . import crud as invoices_crud
-from ...core.database import get_db
+from ..batches import crud as batches_crud
+from ..retraining_model.data_processor import process_with_qwen
+from ..users import models as users_models
+from ..users import crud as users_crud
 from ...utils.ocr_parser import process_invoice
 from ...utils.r2 import (
     upload_to_r2_bytes,
@@ -33,7 +33,6 @@ from ...utils.r2 import (
     s3,
     R2_BUCKET,
 )
-from .models import Invoice
 from .schemas import InvoiceDeleteRequest
 from ...utils.files_service import (
     upload_to_files_service_bytes,
@@ -185,6 +184,20 @@ async def review_invoice(
         raise HTTPException(
             status_code=404, detail={"ok": False, "msg": "Invoice not found"}
         )
+
+    if invoice.reviewed and invoice.invoice_date:
+        batch_id = await batches_crud.find_matching_batch_for_invoice(
+            db, current_user.id, invoice.invoice_date
+        )
+        if batch_id:
+            await db.execute(
+                update(Invoice)
+                .where(Invoice.id == invoice.id)
+                .values(batch_id=batch_id)
+            )
+            await db.commit()
+            print(f"📦 Invoice {invoice.id} auto-assigned to batch {batch_id}")
+
     return {"ok": True, "msg": "Invoice review updated", "invoice_id": invoice.id}
 
 

@@ -33,6 +33,10 @@ class VATCertificateSchema(BaseDocSchema):
     vat_license_number: Optional[str]
     vat_date_of_issue: Optional[datetime]
     vat_version_number: Optional[str]
+    vat_batch_one: Optional[str]
+    vat_batch_two: Optional[str]
+    vat_batch_three: Optional[str]
+    vat_batch_four: Optional[str]
 
 
 class CorporateTaxSchema(BaseDocSchema):
@@ -74,8 +78,26 @@ class TradeLicenseSchema(BaseDocSchema):
     tl_membership_since: Optional[datetime]
 
 
+class PassportSchema(BaseDocSchema):
+    passport_number: Optional[str]
+    passport_name: Optional[str]
+    passport_date_of_birth: Optional[datetime]
+    passport_issue_date: Optional[datetime]
+    passport_expiry_date: Optional[datetime]
+
+
+class EmiratesIDSchema(BaseDocSchema):
+    emirates_id_number: Optional[str]
+    emirates_id_name: Optional[str]
+    emirates_id_date_of_birth: Optional[datetime]
+    emirates_id_issue_date: Optional[datetime]
+    emirates_id_expiry_date: Optional[datetime]
+
+
 DOC_SCHEMA_MAP = {
     "vat_certificate": VATCertificateSchema,
     "ct_certificate": CorporateTaxSchema,
     "trade_license": TradeLicenseSchema,
+    "passport": PassportSchema,
+    "emirates_id": EmiratesIDSchema,
 }

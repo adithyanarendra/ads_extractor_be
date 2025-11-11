@@ -5,7 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.database import get_db
 from ..invoices.routes import get_current_user
-from .crud import get_vat_summary, get_all_reports, get_report, create_report
+from .crud import (
+    get_vat_summary,
+    get_all_reports,
+    get_report,
+    create_report,
+    get_vat_summary_by_batch,
+)
 from ...utils.r2 import upload_to_r2_bytes, get_file_from_r2
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -20,6 +26,16 @@ async def vat_summary(
     if not result["ok"]:
         return {**result, "http_status": status.HTTP_400_BAD_REQUEST}
 
+    return result
+
+
+@router.get("/generate/vat_by_batch/{batch_id}")
+async def vat_summary_by_batch(
+    batch_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    result = await get_vat_summary_by_batch(db, current_user.id, batch_id)
     return result
 
 

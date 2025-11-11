@@ -15,6 +15,10 @@ VAT_FIELDS = [
     "vat_license_number",
     "vat_date_of_issue",
     "vat_version_number",
+    "vat_batch_one",
+    "vat_batch_two",
+    "vat_batch_three",
+    "vat_batch_four",
 ]
 
 CT_FIELDS = [
@@ -27,18 +31,15 @@ CT_FIELDS = [
     "ct_contact_number",
     "ct_effective_registration_date",
     "ct_tax_period",
-
     # First Corporate Tax Period
     "ct_first_period_start_date",
     "ct_first_period_end_date",
     "ct_first_return_due_date",
-
     # License info
     "ct_license_holder_name",
     "ct_license_authority",
     "ct_license_number",
     "ct_license_issue_date",
-
     "ct_version_number",
 ]
 
@@ -55,9 +56,27 @@ TL_FIELDS = [
     "tl_membership_since",
 ]
 
+PASSPORT_FIELDS = [
+    "passport_number",
+    "passport_name",
+    "passport_date_of_birth",
+    "passport_issue_date",
+    "passport_expiry_date",
+]
+
+EMIRATES_ID_FIELDS = [
+    "emirates_id_number",
+    "emirates_id_name",
+    "emirates_id_date_of_birth",
+    "emirates_id_issue_date",
+    "emirates_id_expiry_date",
+]
+
 
 DOC_TYPE_MAP = {
     "vat_certificate": VAT_FIELDS,
     "ct_certificate": CT_FIELDS,
     "trade_license": TL_FIELDS,
+    "passport": PASSPORT_FIELDS,
+    "emirates_id": EMIRATES_ID_FIELDS,
 }

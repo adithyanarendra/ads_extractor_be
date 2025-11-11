@@ -11,6 +11,7 @@ from .api.companies import routes as companies_routes
 from app.api.batches.routes import router as batches_router
 from .api.user_docs.routes import router as user_docs_router
 from .api.reports.routes import router as reports_router
+from .api.statements.routes import router as statements_router
 
 app = FastAPI(title="FastAPI Invoice OCR")
 
@@ -40,6 +41,7 @@ app.include_router(lov_router)
 app.include_router(batches_router)
 app.include_router(user_docs_router)
 app.include_router(reports_router)
+app.include_router(statements_router)
 
 
 @app.get("/")
