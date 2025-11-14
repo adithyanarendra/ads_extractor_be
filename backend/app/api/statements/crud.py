@@ -87,6 +87,13 @@ async def process_statement_background(
             transactions = parsed.get("transactions", [])
 
             for tx in transactions:
+                if tx.get("transaction_type") == "credit":
+                    from_ac = tx.get("from_account") or "Payment A/C"
+                    to_ac = tx.get("to_account") or "Bank"
+                else:
+                    from_ac = tx.get("from_account") or "Bank"
+                    to_ac = tx.get("to_account") or "Payment A/C"
+
                 db.add(
                     StatementItem(
                         statement_id=statement_id,
@@ -95,6 +102,10 @@ async def process_statement_background(
                         transaction_type=tx.get("transaction_type"),
                         amount=tx.get("amount"),
                         balance=tx.get("balance"),
+                        transaction_type_detail=tx.get("transaction_type_detail"),
+                        remarks=tx.get("remarks"),
+                        from_account=from_ac,
+                        to_account=to_ac,
                     )
                 )
 
@@ -295,6 +306,56 @@ async def delete_statement_item(db: AsyncSession, item_id: int, user):
         return {
             "ok": False,
             "message": "Failed to delete statement item",
+            "error": str(e),
+            "data": None,
+        }
+
+
+async def update_statement_item(db: AsyncSession, item_id: int, user, updates: dict):
+    try:
+        item = await db.get(StatementItem, item_id)
+        if not item:
+            return {
+                "ok": False,
+                "message": "Statement item not found",
+                "error": "Missing",
+                "data": None,
+            }
+
+        stmt = await db.get(Statement, item.statement_id)
+        if not stmt or stmt.owner_id != user.id:
+            return {
+                "ok": False,
+                "message": "Access denied",
+                "error": "Unauthorized",
+                "data": None,
+            }
+
+        restricted = {"id", "statement_id"}
+        for key in restricted:
+            if key in updates:
+                updates.pop(key)
+
+        model_fields = {c.name for c in StatementItem.__table__.columns}
+
+        for key, value in updates.items():
+            if key in model_fields:
+                setattr(item, key, value)
+
+        await db.commit()
+        await db.refresh(item)
+
+        return {
+            "ok": True,
+            "message": "Statement item updated",
+            "error": None,
+            "data": item,
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "message": "Failed to update statement item",
             "error": str(e),
             "data": None,
         }

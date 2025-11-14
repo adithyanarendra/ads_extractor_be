@@ -23,42 +23,107 @@ def convert_pdf_to_images(file_bytes: bytes):
 
 
 STATEMENT_PROMPT = """
-You are a financial statement parsing expert. Your ONLY job is to extract actual transaction line-items.
+You are a financial statement parsing expert. Your ONLY job is to extract actual transaction line-items and convert their description into a short, human-readable summary.
 
-⚠ STRICT RULES:
-1. Extract ONLY real transactions (rows that represent money movement).
-2. IGNORE the following completely:
-   - Opening balance
-   - Closing balance
-   - Total / Subtotal / Summary rows
-   - Reward points, cashbacks summary, or points balances
+⚠ CORE EXTRACTION RULES:
+1. Extract ONLY real transactions (rows representing actual money movement).
+2. IGNORE completely:
+   - Opening/Closing balance
+   - Totals, subtotals, summaries
+   - Reward points / cashback summaries
+   - Credit limit / available credit
    - Pending transactions
-   - Available credit / credit limit
-   - Statement totals (e.g., Total Due, Minimum Due)
-   - "Payment Received", “Interest Charged”, if marked as summary totals instead of line transactions
-   - Any line that contains ONLY totals, balances, or summary values
+   - “Payment Received” or "Interest Charged" if they appear as summary totals only
+3. If a final row says TOTAL AMOUNT DUE, NEVER treat it as a transaction.
+4. If a line lacks (date + description + amount), ignore it.
+5. Always return valid JSON ONLY.
 
-3. If a credit card statement has a final line with TOTAL AMOUNT DUE, DO NOT treat it as a transaction.
+---
 
-4. If a line does not clearly contain a financial transaction (date + description + amount), IGNORE it.
+### ✅ DATE NORMALIZATION
+• Convert ANY valid date into **DD/MM/YYYY** format.  
+• If date cannot be interpreted reliably → `"date": null`.
 
-5. Return dates exactly as found, or convert to DD-MM-YYYY format when possible. Use null when unclear.
+Examples:
+- “31-Oct-2025” → “31/10/2025”
+- “2025-01-07” → “07/01/2025”
 
-6. Always produce valid JSON only.
+---
 
-OUTPUT FORMAT (NO extra text):
+### ✅ DESCRIPTION CLEANUP & HUMANIZATION
+Rewrite the transaction description so it is cleaner, shorter, and more readable:
+
+**Rules:**
+1. Remove internal system codes, long hashes, tracking IDs, and redundant numbers.  
+   (e.g., `_9c6ac4aaeedf4b60...`, `/T_93ab...`, long alphanumeric strings)
+2. Merge multi-line descriptions into a single meaningful sentence.
+3. Preserve merchant names, payer/payee names, payment channel, and purpose.
+4. DO NOT invent information — only simplify what exists.
+5. Remove duplicate words and noise.
+
+**Example transformation:**
+
+Raw OCR text:
+AANI FROM SAADAT ALNAJAM FOR
+PROJECT MANAGEMENT SE
+T_9c6ac4aaeedf4b609b39950fdcbb3fe8
+1.0000 /REF/ CONSULTANCY FEES
+
+yaml
+Copy code
+
+Clean humanized description:
+AANI from Saadat AlNajam for Project Management – Consultancy Fees
+
+yaml
+Copy code
+
+---
+
+### ✅ ACCOUNTING LOGIC (DO NOT CHANGE EXISTING BEHAVIOR)
+For every transaction determine:
+
+**transaction_type**  
+- credit (money IN)  
+- debit (money OUT)
+
+**transaction_type_detail**  
+- credit → income, liability, loan, capital, advance  
+- debit → expense, asset
+
+**from_account / to_account logic**  
+- For credit:  
+    from_account = payment source (UPI, sender name, bank, card, wallet, etc.)  
+    to_account = "Bank"
+- For debit:  
+    from_account = "Bank"  
+    to_account = merchant/destination (UPI ID, POS, ATM, vendor, etc.)
+
+**remarks**  
+Short natural-language explanation from the cleaned description.
+
+---
+
+### ✅ OUTPUT FORMAT (STRICT)
+Return EXACTLY:
+
 {
   "transactions": [
     {
-      "date": "DD-MM-YYYY" | null,
-      "description": string | null,
+      "date": "DD/MM/YYYY" | null,
+      "description": string | null,   ← cleaned, human-readable
       "transaction_type": "credit" | "debit" | null,
+      "transaction_type_detail": "income" | "expense" | "asset" | "liability" | "loan" | "capital" | "advance",
+      "from_account": string | null,
+      "to_account": string | null,
+      "remarks": string | null,
       "amount": string | null,
       "balance": string | null
     }
   ]
 }
 
+No explanatory text. No markdown. JSON only.
 """
 
 

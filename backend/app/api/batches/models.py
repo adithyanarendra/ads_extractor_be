@@ -17,6 +17,7 @@ class Batch(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     name = Column(String, nullable=False)
+    batch_year = Column(Integer, nullable=True)
     locked = Column(Boolean, nullable=False, default=False)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -30,6 +31,8 @@ class Batch(Base):
     __table_args__ = (
         UniqueConstraint("owner_id", "name", name="uq_batches_owner_name"),
     )
-    parent_id = Column(Integer, ForeignKey("batches.id"), nullable=True)
+    parent_id = Column(
+        Integer, ForeignKey("batches.id", ondelete="CASCADE"), nullable=True
+    )
     parent = relationship("Batch", remote_side=[id], back_populates="children")
     children = relationship("Batch", back_populates="parent")

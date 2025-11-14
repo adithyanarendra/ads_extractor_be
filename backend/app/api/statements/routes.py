@@ -13,7 +13,9 @@ from .crud import (
     delete_statement,
     delete_statement_item,
     process_statement_background,
+    update_statement_item,
 )
+from . import schemas as statement_schemas
 from ...core.database import get_db
 from ..invoices.routes import get_current_user
 
@@ -126,4 +128,15 @@ async def delete_statement_item_route(
     current_user=Depends(get_current_user),
 ):
     result = await delete_statement_item(db, item_id, current_user)
+    return result
+
+
+@router.patch("/item/edit/{item_id}")
+async def edit_statement_item(
+    item_id: int,
+    body: statement_schemas.StatementItemUniversalEditIn,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    result = await update_statement_item(db, item_id, current_user, body.updates)
     return result

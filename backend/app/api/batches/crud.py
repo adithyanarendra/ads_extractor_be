@@ -1,6 +1,8 @@
 import io
 import zipfile
 import csv
+from re import findall
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 from calendar import month_abbr
@@ -26,29 +28,42 @@ async def list_batches(db: AsyncSession, owner_id: int) -> Dict[str, Any]:
     try:
         result = await db.execute(
             select(models.Batch)
-            .options(selectinload(models.Batch.invoices))
+            .options(
+                selectinload(models.Batch.invoices),
+                selectinload(models.Batch.children).selectinload(models.Batch.invoices),
+            )
             .where(models.Batch.owner_id == owner_id)
             .order_by(models.Batch.created_at.desc())
         )
-        rows = result.scalars().all()
-        data = [
-            {
-                "id": b.id,
-                "name": b.name,
-                "locked": b.locked,
-                "created_at": b.created_at.isoformat() if b.created_at else None,
-                "invoice_count": len(b.invoices) if b.invoices else 0,
-                "invoice_ids": [inv.id for inv in b.invoices or []],
-            }
-            for b in rows
-        ]
+        rows = result.scalars().unique().all()
+
+        data = []
+        for b in rows:
+            all_invoices = list(b.invoices)
+            for child in b.children or []:
+                all_invoices.extend(child.invoices or [])
+            data.append(
+                {
+                    "id": b.id,
+                    "name": b.name,
+                    "invoice_count": len(all_invoices),
+                    "invoice_ids": [inv.id for inv in all_invoices],
+                    "parent_id": b.parent_id,
+                }
+            )
+
         return _ok("Fetched batches.", data)
     except Exception as e:
         return _err("Failed to fetch batches.", str(e))
 
 
 async def create_batch(
-    db: AsyncSession, name: str, owner_id: int, invoice_ids: Optional[List[int]] = None
+    db: AsyncSession,
+    name: str,
+    owner_id: int,
+    invoice_ids: Optional[List[int]] = None,
+    batch_year: Optional[int] = None,
+    parent_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Create a new batch and assign invoices"""
     try:
@@ -64,14 +79,22 @@ async def create_batch(
 
         # ✅ Add timestamps
         now = datetime.now(timezone.utc)
+        if not batch_year:
+            years = findall(r"\b(20\d{2})\b", name)
+            batch_year = int(years[0]) if years else None
         new_batch = models.Batch(
-            name=name, locked=False, owner_id=owner_id, created_at=now, updated_at=now
+            name=name,
+            locked=False,
+            owner_id=owner_id,
+            created_at=now,
+            updated_at=now,
+            batch_year=batch_year,
+            parent_id=parent_id,
         )
 
         db.add(new_batch)
-        await db.flush()  # ensures batch.id is available
+        await db.flush()
 
-        # Attach invoices (if provided)
         if invoice_ids:
             await db.execute(
                 update(Invoice)
@@ -83,7 +106,12 @@ async def create_batch(
         await db.refresh(new_batch)
         return _ok(
             "Batch created.",
-            {"id": new_batch.id, "name": new_batch.name, "locked": new_batch.locked},
+            {
+                "id": new_batch.id,
+                "name": new_batch.name,
+                "locked": new_batch.locked,
+                "parent_id": new_batch.parent_id,
+            },
         )
     except Exception as e:
         await db.rollback()
@@ -199,9 +227,9 @@ async def add_invoices_to_batch(
         # Fetch the batch and ensure it belongs to the owner
         batch = (
             await db.execute(
-                select(models.Batch).where(
-                    models.Batch.id == batch_id, models.Batch.owner_id == owner_id
-                )
+                select(models.Batch)
+                .options(selectinload(models.Batch.parent))
+                .where(models.Batch.id == batch_id, models.Batch.owner_id == owner_id)
             )
         ).scalar_one_or_none()
 
@@ -232,6 +260,31 @@ async def add_invoices_to_batch(
             .where(Invoice.id.in_(verified_ids))
             .values(batch_id=batch_id)
         )
+
+        if batch.parent_id:
+            parent_id = batch.parent_id
+
+            # Fetch parent batch
+            parent_batch = (
+                await db.execute(
+                    select(models.Batch)
+                    .where(models.Batch.id == parent_id)
+                    .options(selectinload(models.Batch.invoices))
+                )
+            ).scalar_one_or_none()
+
+            if parent_batch:
+                existing_parent_invoice_ids = {inv.id for inv in parent_batch.invoices}
+                new_parent_invoice_ids = set(verified_ids) - existing_parent_invoice_ids
+
+                if new_parent_invoice_ids:
+                    parent_batch.invoices.extend(
+                        [
+                            inv
+                            for inv in verified_invoices
+                            if inv.id in new_parent_invoice_ids
+                        ]
+                    )
 
         batch.updated_at = datetime.now(timezone.utc)
         await db.commit()
@@ -364,7 +417,32 @@ def parse_batch_range(batch_name: str):
             return None
         start_month = MONTH_MAP.get(months[0][:3].lower())
         end_month = MONTH_MAP.get(months[1][:3].lower())
-        return (start_month, end_month, year)
+        if not start_month or not end_month:
+            return None
+        if end_month < start_month:
+            start_year = year - 1
+            end_year = year
+        else:
+            start_year = end_year = year
+
+        return (start_month, end_month, start_year, end_year)
+    except Exception:
+        return None
+
+
+def parse_single_month_batch(name: str):
+    """
+    Parse 'Feb 2025' → (2, 2025)
+    """
+    try:
+        parts = name.strip().split()
+        if len(parts) != 2:
+            return None
+        month, year = parts
+        month_num = MONTH_MAP.get(month[:3].lower())
+        if not month_num:
+            return None
+        return (month_num, int(year))
     except Exception:
         return None
 
@@ -376,7 +454,6 @@ async def find_matching_batch_for_invoice(
     try:
         if not invoice_date:
             return None
-        from datetime import datetime
 
         date_obj = datetime.strptime(invoice_date, "%d-%m-%Y")
         inv_month, inv_year = date_obj.month, date_obj.year
@@ -387,13 +464,19 @@ async def find_matching_batch_for_invoice(
         batches = result.scalars().all()
 
         for b in batches:
+            single = parse_single_month_batch(b.name)
+            if single:
+                m, y = single
+                if y == inv_year and m == inv_month:
+                    exact_match = b.id
+                    break
+
             parsed = parse_batch_range(b.name)
-            if not parsed:
-                continue
-            start_m, end_m, yr = parsed
-            if yr == inv_year and start_m <= inv_month <= end_m:
-                return b.id
-        return None
+            if parsed:
+                start_m, end_m, start_y, end_y = parsed
+                if start_y == end_y == inv_year and start_m <= inv_month <= end_m:
+                    range_match = b.id
+        return exact_match or range_match
     except Exception as e:
         print("⚠️ find_matching_batch_for_invoice error:", e)
         return None

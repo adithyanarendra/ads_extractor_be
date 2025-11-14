@@ -72,10 +72,8 @@ async def upload_report(
         content = await file.read()
         filename = f"{current_user.id}/{type}/{file.filename}"
 
-        # upload to R2
         file_url = upload_to_r2_bytes(content, filename)
 
-        # store DB record
         result = await create_report(
             db,
             user_id=current_user.id,

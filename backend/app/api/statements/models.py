@@ -41,4 +41,9 @@ class StatementItem(Base):
     amount = Column(String)
     balance = Column(String)
 
+    transaction_type_detail = Column(String(50), nullable=True)
+    from_account = Column(String(100), nullable=True)
+    to_account = Column(String(100), nullable=True)
+    remarks = Column(String(500), nullable=True)
+
     statement = relationship("Statement", back_populates="items")

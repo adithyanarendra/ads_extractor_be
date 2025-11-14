@@ -1,8 +1,19 @@
 from sqlalchemy import select, func, cast, Numeric
+from sqlalchemy.orm import selectinload
+from decimal import Decimal, InvalidOperation
+
 from .models import Report
 from ..invoices.models import Invoice
 from ..user_docs.models import UserDocs
-from ..batches.crud import get_invoice_ids_for_batch
+from ..batches import models as batch_models
+
+
+def _to_decimal(value):
+    """Safely convert strings or None to Decimal."""
+    try:
+        return Decimal(str(value or "0").replace(",", "").strip())
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0")
 
 
 async def get_vat_summary(db, user_id: int):
@@ -129,26 +140,31 @@ async def get_vat_summary_by_batch(db, user_id: int, batch_id: int):
         )
         company = vat_doc.fetchone()
 
-        company_details = {
-            "vat_legal_name_arabic": company.vat_legal_name_arabic if company else None,
-            "vat_legal_name_english": (
-                company.vat_legal_name_english if company else None
-            ),
-            "vat_tax_registration_number": (
-                company.vat_tax_registration_number if company else None
-            ),
-        }
-
         if not company:
             return {
                 "ok": False,
                 "message": "VAT certificate not found for user",
-                "error": "VAT certificate missing",
+                "error": "VAT_CERTIFICATE_MISSING",
                 "data": None,
             }
 
-        batch_res = await get_invoice_ids_for_batch(db, batch_id, owner_id=user_id)
-        if not batch_res.get("ok"):
+        batch_result = await db.execute(
+            select(batch_models.Batch)
+            .options(
+                selectinload(batch_models.Batch.invoices),
+                selectinload(batch_models.Batch.children).selectinload(
+                    batch_models.Batch.invoices
+                ),
+                selectinload(batch_models.Batch.parent),
+            )
+            .where(
+                batch_models.Batch.id == batch_id,
+                batch_models.Batch.owner_id == user_id,
+            )
+        )
+        batch = batch_result.scalars().unique().one_or_none()
+
+        if not batch:
             return {
                 "ok": False,
                 "message": "Batch not found",
@@ -156,14 +172,21 @@ async def get_vat_summary_by_batch(db, user_id: int, batch_id: int):
                 "data": None,
             }
 
-        invoice_ids = batch_res["data"]["invoice_ids"]
-        if not invoice_ids:
+        vat_period = batch.parent.name if batch.parent else batch.name
+
+        all_invoices = list(batch.invoices or [])
+        for child in batch.children or []:
+            all_invoices.extend(child.invoices or [])
+
+        if not all_invoices:
             return {
                 "ok": False,
                 "message": "No invoices inside the batch",
                 "error": "EMPTY_BATCH",
                 "data": None,
             }
+
+        invoice_ids = [i.id for i in all_invoices]
 
         invoice_query = select(
             Invoice.invoice_number,
@@ -175,69 +198,77 @@ async def get_vat_summary_by_batch(db, user_id: int, batch_id: int):
             Invoice.total,
             Invoice.remarks,
             Invoice.type,
+            Invoice.has_tax_note,
+            Invoice.tax_note_type,
+            Invoice.tax_note_amount,
         ).where(
             Invoice.owner_id == user_id,
             Invoice.reviewed == True,
             Invoice.id.in_(invoice_ids),
         )
+        result = await db.execute(invoice_query)
 
         invoices = (await db.execute(invoice_query)).mappings().all()
 
-        sales_invoices = [i for i in invoices if i["type"] == "sales"]
-        expense_invoices = [i for i in invoices if i["type"] == "expense"]
+        if not invoices:
+            return {
+                "ok": False,
+                "message": "No verified invoices found inside the batch",
+                "error": "EMPTY_BATCH",
+                "data": None,
+            }
 
-        tax_sum_query = await db.execute(
-            select(
-                func.sum(cast(Invoice.tax_amount, Numeric)).label("tax_sum"),
-                Invoice.type,
-            )
-            .where(
-                Invoice.owner_id == user_id,
-                Invoice.reviewed == True,
-                Invoice.id.in_(invoice_ids),
-            )
-            .group_by(Invoice.type)
-        )
+        total_vat_input = Decimal("0")
+        total_vat_output = Decimal("0")
+        standard_rated_sales = Decimal("0")
+        standard_rated_expense = Decimal("0")
 
-        tax_totals = tax_sum_query.all()
-        total_vat_input = (
-            sum([t.tax_sum for t in tax_totals if t.type == "expense"]) or 0
-        )
-        total_vat_output = (
-            sum([t.tax_sum for t in tax_totals if t.type == "sales"]) or 0
-        )
+        for inv in invoices:
+            inv_type = inv.get("type")
+            tax_amount = _to_decimal(inv.get("tax_amount"))
+            before_tax_amount = _to_decimal(inv.get("before_tax_amount"))
+            has_note = inv.get("has_tax_note", False)
+            note_type = (inv.get("tax_note_type") or "").lower().strip()
+            note_amount = _to_decimal(inv.get("tax_note_amount"))
+
+            if inv_type == "sales":
+                total_vat_output += tax_amount
+                standard_rated_sales += before_tax_amount
+            elif inv_type == "expense":
+                total_vat_input += tax_amount
+                standard_rated_expense += before_tax_amount
+
+            if has_note and note_type in ("credit", "debit"):
+                if inv_type == "sales":
+                    if note_type == "credit":
+                        total_vat_output -= note_amount
+                    elif note_type == "debit":
+                        total_vat_output += note_amount
+                elif inv_type == "expense":
+                    if note_type == "credit":
+                        total_vat_input -= note_amount
+                    elif note_type == "debit":
+                        total_vat_input += note_amount
 
         total_vat_to_pay = total_vat_output - total_vat_input
 
-        std_totals_query = await db.execute(
-            select(
-                func.sum(cast(Invoice.before_tax_amount, Numeric)).label("std_total"),
-                Invoice.type,
-            )
-            .where(
-                Invoice.owner_id == user_id,
-                Invoice.reviewed == True,
-                Invoice.id.in_(invoice_ids),
-            )
-            .group_by(Invoice.type)
-        )
-
-        std_totals = std_totals_query.all()
-        standard_rated_expense = (
-            sum([s.std_total for s in std_totals if s.type == "expense"]) or 0
-        )
-        standard_rated_sales = (
-            sum([s.std_total for s in std_totals if s.type == "sales"]) or 0
-        )
-
         return {
             "ok": True,
-            "message": "VAT batch summary fetched successfully",
+            "message": f"VAT summary fetched successfully for batch '{batch.name}'",
             "error": None,
             "data": {
-                "company_details": company_details,
-                "sales_invoices": sales_invoices,
-                "expense_invoices": expense_invoices,
+                "batch_id": batch.id,
+                "batch_name": batch.name,
+                "invoice_count": len(invoice_ids),
+                "company_details": {
+                    "vat_legal_name_arabic": company.vat_legal_name_arabic,
+                    "vat_legal_name_english": company.vat_legal_name_english,
+                    "vat_tax_registration_number": company.vat_tax_registration_number,
+                    "vat_period": vat_period,
+                },
+                "vat_period": vat_period,
+                "sales_invoices": [i for i in invoices if i["type"] == "sales"],
+                "expense_invoices": [i for i in invoices if i["type"] == "expense"],
                 "standard_rated_expense": str(standard_rated_expense),
                 "standard_rated_sales": str(standard_rated_sales),
                 "total_vat_input": str(total_vat_input),

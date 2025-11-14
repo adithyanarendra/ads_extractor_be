@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 
 class StatementItemOut(BaseModel):
@@ -7,6 +7,10 @@ class StatementItemOut(BaseModel):
     transaction_date: Optional[str]
     description: Optional[str]
     transaction_type: Optional[str]
+    transaction_type_detail: Optional[str]
+    remarks: Optional[str]
+    from_account: Optional[str]
+    to_account: Optional[str]
     amount: Optional[str]
     balance: Optional[str]
 
@@ -39,3 +43,14 @@ class StatementListOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class StatementItemEditIn(BaseModel):
+    transaction_type_detail: Optional[str] = None
+    remarks: Optional[str] = None
+    from_account: Optional[str] = None
+    to_account: Optional[str] = None
+
+
+class StatementItemUniversalEditIn(BaseModel):
+    updates: Dict[str, Any]

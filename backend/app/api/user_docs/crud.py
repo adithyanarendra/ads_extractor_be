@@ -1,7 +1,7 @@
 import os
-import re
-from dateutil import parser
-from dateutil.relativedelta import relativedelta
+from re import findall
+import asyncio
+from calendar import month_abbr
 from fastapi import UploadFile, HTTPException, status
 from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
@@ -205,13 +205,11 @@ async def process_doc_metadata(doc_id, file_bytes, doc_type: str):
             db=db, doc_id=doc_id, file_bytes=file_bytes, doc_type=doc_type
         )
 
-        # new
         result = await db.execute(select(UserDocs).where(UserDocs.id == doc_id))
         doc = result.scalar_one_or_none()
         if not doc:
             return
 
-        # 3) Only for VAT certificate: auto-create batches
         if doc.file_name == "vat_certificate":
             await _autocreate_vat_batches_for_doc(db, doc)
 
@@ -267,42 +265,55 @@ async def _autocreate_vat_batches_for_doc(db: AsyncSession, doc: UserDocs):
     for name in period_names:
         if not name:
             continue
-        await batches_crud.create_batch(
-            db, name=name, owner_id=owner_id, invoice_ids=None
+        years = findall(r"\b(20\d{2})\b", name)
+        batch_year = int(years[0]) if years else None
+
+        res = await batches_crud.create_batch(
+            db, name=name, owner_id=owner_id, invoice_ids=None, batch_year=batch_year
         )
 
+        if res.get("ok"):
+            parent_id = res["data"]["id"]
+            asyncio.create_task(_autocreate_child_batches(owner_id, name, parent_id))
 
-def _generate_month_list(period_str: str) -> list[str]:
-    """
-    Convert 'Feb - Apr 2025' into ['Feb 2025', 'Mar 2025', 'Apr 2025']
-    Supports formats like:
-      - Jan - Mar 2025
-      - Jan 2025 - Mar 2025
-      - 01/02/2025 - 31/03/2025 (if needed later)
-    """
-    # Extract months and year
-    # Example match groups: 'Feb', 'Apr', '2025'
-    pattern = r"([A-Za-z]{3,})\s?-?\s?([A-Za-z]{3,})?\s?(\d{4})"
-    match = re.findall(pattern, period_str)
 
-    if not match:
-        return []
+async def _autocreate_child_batches(
+    owner_id: int, parent_name: str, parent_id: Optional[int] = None
+):
+    async with SessionLocal() as db:
+        parsed = batches_crud.parse_batch_range(parent_name)
+        if not parsed:
+            print(f"[child-batches] Skipping invalid range: {parent_name}")
+            return
 
-    start_month, end_month, year = match[0]
-    year = int(year)
+        start_month, end_month, start_year, end_year = parsed
 
-    # If only one month (means no range)
-    if not end_month:
-        return [f"{start_month} {year}"]
+        current_year = start_year
+        month = start_month
 
-    start_date = parser.parse(f"1 {start_month} {year}")
-    end_date = parser.parse(f"1 {end_month} {year}")
+        while True:
+            month_name = month_abbr[month]
+            child_name = f"{month_name} {current_year}"
 
-    months = []
-    current = start_date
+            try:
+                await batches_crud.create_batch(
+                    db,
+                    name=child_name,
+                    owner_id=owner_id,
+                    invoice_ids=None,
+                    batch_year=current_year,
+                    parent_id=parent_id,
+                )
+                print(
+                    f"[child-batches] ✅ Created child batch: {child_name} (parent={parent_id})"
+                )
+            except Exception as e:
+                print(f"[child-batches] ⚠️ Skipped child {child_name}: {e}")
 
-    while current <= end_date:
-        months.append(current.strftime("%b %Y"))
-        current += relativedelta(months=1)
+            if current_year == end_year and month == end_month:
+                break
 
-    return months
+            month += 1
+            if month > 12:
+                month = 1
+                current_year += 1
