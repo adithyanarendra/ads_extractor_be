@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Body
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
 
 from ...core.database import get_db
 from ...core import auth
@@ -8,7 +8,11 @@ from . import crud as companies_crud
 from . import schemas as companies_schemas
 from ..users import models as users_models
 from ..users import crud as users_crud
-
+from ..companies.crud import (
+    add_user_to_company,
+)
+from ..users import crud as users_crud
+from .models import CompanyUser
 
 router = APIRouter(prefix="/companies", tags=["companies"])
 
@@ -106,3 +110,60 @@ async def delete_company(
     if not success:
         raise HTTPException(status_code=404, detail="Company not found")
     return {"ok": True, "message": "Company deleted successfully"}
+
+
+@router.post("/{company_id}/add_user")
+async def add_user_to_company(
+    company_id: int,
+    payload: companies_schemas.AddUserPayload,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+
+    # check jursidiction: current_user must be site admin or company_admin for that company
+    allowed = False
+    if current_user.is_admin:
+        allowed = True
+    else:
+        # check if current_user is company_admin
+        stmt = await db.execute(
+            select(CompanyUser).where(
+                CompanyUser.company_id == company_id,
+                CompanyUser.user_id == current_user.id,
+            )
+        )
+        assoc = stmt.scalars().first()
+        if assoc and assoc.company_admin:
+            allowed = True
+
+    if not allowed:
+        return {"ok": False, "error": "Not authorized to add users to this company"}
+
+    # ensure target user exists
+    user = await users_crud.get_user_by_id(db, payload["user_id"])
+    if not user:
+        return {"ok": False, "error": "User not found"}
+
+    assoc = await add_user_to_company(
+        db,
+        company_id,
+        payload["user_id"],
+        added_by=current_user.id,
+        company_admin=payload.get("company_admin", False),
+    )
+    return {"ok": True, "msg": "User added to company", "assoc_id": assoc.id}
+
+
+@router.delete("/{company_id}/remove_user/{user_id}")
+async def remove_user_from_company(
+    company_id: int,
+    user_id: int,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # similar authorization checks as above
+    # ...
+    success = await companies_crud.remove_user_from_company(db, company_id, user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Association not found")
+    return {"ok": True, "msg": "User removed from company"}

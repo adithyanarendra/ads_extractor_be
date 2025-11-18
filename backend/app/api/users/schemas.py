@@ -30,3 +30,7 @@ class ResetPasswordRequest(BaseModel):
 class UpdateUserRequest(BaseModel):
     user_id: Optional[int] = None
     name: Optional[str] = None
+
+
+class SelectCompanyPayload(BaseModel):
+    company_id: int

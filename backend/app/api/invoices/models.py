@@ -22,6 +22,7 @@ class Invoice(Base):
     remarks = Column(String, nullable=True)
     description = Column(String, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -31,6 +32,7 @@ class Invoice(Base):
     batch = relationship("Batch", back_populates="invoices")
 
     owner = relationship("User", back_populates="invoices")
+    company = relationship("Company", backref="invoices")
     file_hash = Column(String(64), nullable=False, index=True)
     is_duplicate = Column(Boolean, default=False, nullable=False)
 

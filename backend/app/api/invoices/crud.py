@@ -10,14 +10,30 @@ from ...utils.ocr_parser import process_invoice
 from ...core.database import SessionLocal
 
 
+def sanitize_total(value):
+    """Extracts numeric value from string safely."""
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    # Remove commas and non-numeric characters except dot
+    clean = re.sub(r"[^0-9.]", "", str(value))
+    try:
+        return float(clean) if clean else 0.0
+    except ValueError:
+        return 0.0
+
+
 async def create_processing_invoice(
-    db: AsyncSession, owner_id: int, vendor_name: str, invoice_type: str
+    db: AsyncSession,
+    owner_id: int,
+    vendor_name: str,
+    invoice_type: str,
+    company_id: int | None = None,
 ):
-    """
-    Creates a placeholder invoice entry when processing starts.
-    """
     inv = invoices_models.Invoice(
         owner_id=owner_id,
+        company_id=company_id,
         vendor_name=vendor_name,
         is_processing=True,
         reviewed=False,
@@ -116,13 +132,18 @@ async def retry_invoice_extraction(
 
 
 async def create_invoice(
-    db: AsyncSession, owner_id: int, file_path: str, fields: Dict[str, Optional[str]]
+    db: AsyncSession,
+    owner_id: int,
+    file_path: str,
+    fields: Dict[str, Optional[str]],
+    company_id: int | None = None,
 ) -> invoices_models.Invoice:
 
     invoice_hash = fields.pop("file_hash", None)
 
     inv = invoices_models.Invoice(
         owner_id=owner_id,
+        company_id=company_id,
         file_path=file_path,
         file_hash=invoice_hash,
         invoice_number=fields.get("invoice_number"),
@@ -390,20 +411,6 @@ async def run_invoice_extraction(
             await mark_invoice_failed(db, invoice_id, file_url)
 
 
-def sanitize_total(value):
-    """Extracts numeric value from string safely."""
-    if value is None:
-        return 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
-    # Remove commas and non-numeric characters except dot
-    clean = re.sub(r"[^0-9.]", "", str(value))
-    try:
-        return float(clean) if clean else 0.0
-    except ValueError:
-        return 0.0
-
-
 async def get_invoice_analytics(db: AsyncSession, owner_id: int):
     """Returns analytics summary for invoices owned by the user."""
 
@@ -467,3 +474,74 @@ async def get_invoice_analytics(db: AsyncSession, owner_id: int):
         "top_customer": {"name": top_customer[0], "amount": round(top_customer[1], 2)},
         "top_vendor": {"name": top_vendor[0], "amount": round(top_vendor[1], 2)},
     }
+
+
+async def list_invoices_by_company(
+    db: AsyncSession,
+    company_id: int,
+    invoice_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    search: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    ignore_pagination: bool = False,
+):
+    stmt = select(invoices_models.Invoice).where(
+        invoices_models.Invoice.company_id == company_id,
+        invoices_models.Invoice.batch_id.is_(None),
+    )
+
+    if invoice_type:
+        stmt = stmt.where(invoices_models.Invoice.type == invoice_type)
+
+    if search:
+        stmt = stmt.where(
+            or_(
+                invoices_models.Invoice.vendor_name.ilike(f"%{search}%"),
+                invoices_models.Invoice.invoice_number.ilike(f"%{search}%"),
+                invoices_models.Invoice.invoice_date.ilike(f"%{search}%"),
+                invoices_models.Invoice.trn_vat_number.ilike(f"%{search}%"),
+                invoices_models.Invoice.description.ilike(f"%{search}%"),
+            )
+        )
+
+    stmt = stmt.order_by(desc(invoices_models.Invoice.created_at))
+    if not ignore_pagination:
+        stmt = stmt.offset(offset).limit(limit)
+
+    result = await db.execute(stmt)
+    invoices = result.scalars().all()
+
+    from_dt = datetime.strptime(from_date, "%Y-%m-%d") if from_date else None
+    to_dt = datetime.strptime(to_date, "%Y-%m-%d") if to_date else None
+
+    if from_dt or to_dt:
+        filtered = []
+        for inv in invoices:
+            if not inv.invoice_date:
+                filtered.append(inv)
+                continue
+            try:
+                inv_date = datetime.strptime(inv.invoice_date, "%d-%m-%Y")
+            except ValueError:
+                continue
+            if from_dt and inv_date < from_dt:
+                continue
+            if to_dt and inv_date > to_dt:
+                continue
+            filtered.append(inv)
+        return filtered
+
+    return invoices
+
+
+async def get_invoice_by_id_and_company(
+    db: AsyncSession, invoice_id: int, company_id: int
+):
+    stmt = select(invoices_models.Invoice).where(
+        invoices_models.Invoice.id == invoice_id,
+        invoices_models.Invoice.company_id == company_id,
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()

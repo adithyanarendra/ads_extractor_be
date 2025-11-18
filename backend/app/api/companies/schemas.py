@@ -12,6 +12,11 @@ class CompanyBase(BaseModel):
     users_allowed: Optional[List[str]] = []
 
 
+class AddUserPayload(BaseModel):
+    user_id: int
+    company_admin: bool = False
+
+
 class CompanyCreate(CompanyBase):
     pass
 

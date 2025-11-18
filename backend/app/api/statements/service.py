@@ -23,107 +23,165 @@ def convert_pdf_to_images(file_bytes: bytes):
 
 
 STATEMENT_PROMPT = """
-You are a financial statement parsing expert. Your ONLY job is to extract actual transaction line-items and convert their description into a short, human-readable summary.
+You are a UAE financial statement parsing expert. Your ONLY job is:
+1. Extract actual transaction rows.
+2. Extract the primary *account number* associated with the statement.
+3. Extract transaction IDs such as UTR, RRN, Auth Code, Ref No, Cheque No, or any UAE bank transaction reference.
 
 ⚠ CORE EXTRACTION RULES:
-1. Extract ONLY real transactions (rows representing actual money movement).
+1. Extract ONLY real transactions (rows showing money movement).
 2. IGNORE completely:
    - Opening/Closing balance
-   - Totals, subtotals, summaries
-   - Reward points / cashback summaries
+   - Totals / subtotals / summary rows
+   - Reward points, cashback summaries
    - Credit limit / available credit
    - Pending transactions
-   - “Payment Received” or "Interest Charged" if they appear as summary totals only
-3. If a final row says TOTAL AMOUNT DUE, NEVER treat it as a transaction.
-4. If a line lacks (date + description + amount), ignore it.
-5. Always return valid JSON ONLY.
+   - “Payment Received” or “Interest Charged” if summary-only
+3. If a final row says TOTAL AMOUNT DUE → never treat it as a transaction.
+4. Ignore any line missing (date + description + amount).
+5. Always return valid JSON only.
+
+---
+
+### ✅ UAE ACCOUNT NUMBER EXTRACTION RULES (VERY STRICT)
+Your goal is to extract the **primary bank account number** for this statement.
+
+Extraction Priority (in strict order):
+
+1️⃣ **Bank Account Number (Preferred)**  
+   - 8–14 consecutive digits  
+   - Usually appears near:  
+     • “Account No”  
+     • “A/C No”  
+     • “Account Number”  
+     • “Account #”  
+     • Top header of statement pages  
+
+2️⃣ **Credit Card Number (masked or last 4 digits)**  
+   Valid formats:  
+   - XXXX-XXXX-XXXX-1234  
+   - **** **** **** 5678  
+   - ************4321  
+
+3️⃣ **IBAN (ONLY if no account number exists anywhere)**  
+   - Must start with AE + 21 digits  
+   - Example: AE070031234567890123456  
+
+⚠ IMPORTANT  
+- DO NOT return the IBAN if an account number is present anywhere in the document.  
+- DO NOT extract Customer ID, CIF, mobile numbers, or payment reference numbers as account numbers.  
+
+Return:  
+- `"account_number": string | null`  
+- `"provider": bank name if identifiable (Emirates NBD, ADCB, FAB, Mashreq, RAKBANK, HSBC UAE, etc.)`  
+
+---
+
+### ✅ UAE TRANSACTION ID EXTRACTION (EXTREMELY PRECISE)
+For each transaction, extract ANY transaction reference visible in the same row or in the "Transaction ID / Cheque Number" column.
+
+You MUST capture:
+- UTR numbers  
+- RRN  
+- Auth/Approval Codes  
+- Ref No or Reference Number  
+- Transaction ID (TXN- or numeric)  
+- Cheque Number  
+- Any code appearing in a column labelled:
+  • “Transaction ID”  
+  • “Txn ID”  
+  • “Reference No”  
+  • “Ref No”  
+  • “Cheque No”  
+  • “Transaction ID / Cheque Number”  
+
+Valid examples:
+- UTR: 1234567890  
+- RRN: 482918374982  
+- Auth Code: 939402  
+- Ref No: A12939492  
+- TXN-129394  
+- CHQ123456  
+- Cheque No: 002918  
+- 12–18 digit UAE internal reference codes  
+
+Rules:
+1. If multiple IDs appear → choose the most explicit transaction reference.  
+2. If nothing looks like a transaction ID → return null.  
+3. Never invent IDs.  
+
+Return value (per transaction):
+- `"transaction_id": string | null`
 
 ---
 
 ### ✅ DATE NORMALIZATION
-• Convert ANY valid date into **DD/MM/YYYY** format.  
-• If date cannot be interpreted reliably → `"date": null`.
+Convert all dates to **DD/MM/YYYY** format.
 
 Examples:
-- “31-Oct-2025” → “31/10/2025”
-- “2025-01-07” → “07/01/2025”
+- “31-Oct-2024” → “31/10/2024”
+- “2024-01-07” → “07/01/2024”
 
 ---
 
-### ✅ DESCRIPTION CLEANUP & HUMANIZATION
-Rewrite the transaction description so it is cleaner, shorter, and more readable:
+### ✅ DESCRIPTION CLEANUP
+Rewrite descriptions so they are clean and readable:
 
-**Rules:**
-1. Remove internal system codes, long hashes, tracking IDs, and redundant numbers.  
-   (e.g., `_9c6ac4aaeedf4b60...`, `/T_93ab...`, long alphanumeric strings)
-2. Merge multi-line descriptions into a single meaningful sentence.
-3. Preserve merchant names, payer/payee names, payment channel, and purpose.
-4. DO NOT invent information — only simplify what exists.
-5. Remove duplicate words and noise.
-
-**Example transformation:**
-
-Raw OCR text:
-AANI FROM SAADAT ALNAJAM FOR
-PROJECT MANAGEMENT SE
-T_9c6ac4aaeedf4b609b39950fdcbb3fe8
-1.0000 /REF/ CONSULTANCY FEES
-
-yaml
-Copy code
-
-Clean humanized description:
-AANI from Saadat AlNajam for Project Management – Consultancy Fees
-
-yaml
-Copy code
+Rules:
+1. Remove hashes, long codes, noise (unless they are transaction IDs).
+2. Merge multi-line descriptions into one line.
+3. Preserve merchant/payer name, channel, purpose.
+4. Never invent missing information.
 
 ---
 
-### ✅ ACCOUNTING LOGIC (DO NOT CHANGE EXISTING BEHAVIOR)
-For every transaction determine:
+### ACCOUNTING LOGIC (UPDATED — VERY STRICT)
+transaction_type:
+- credit → money IN  
+- debit → money OUT  
 
-**transaction_type**  
-- credit (money IN)  
-- debit (money OUT)
+transaction_type_detail:
+- credit → income / liability / loan / capital / advance  
+- debit → expense / asset  
 
-**transaction_type_detail**  
-- credit → income, liability, loan, capital, advance  
-- debit → expense, asset
+from_account / to_account (VERY STRICT):
+- For ALL credits (money IN): 
+    to_account MUST be exactly "Bank".
+    from_account = the payer/source (clean name).
 
-**from_account / to_account logic**  
-- For credit:  
-    from_account = payment source (UPI, sender name, bank, card, wallet, etc.)  
-    to_account = "Bank"
-- For debit:  
-    from_account = "Bank"  
-    to_account = merchant/destination (UPI ID, POS, ATM, vendor, etc.)
+- For ALL debits (money OUT):
+    from_account MUST be exactly "Bank".
+    to_account = merchant/recipient (clean name).
 
-**remarks**  
-Short natural-language explanation from the cleaned description.
+⚠ NEVER return bank names (Emirates NBD, ADCB, HDFC, RAKBANK, etc.) in from_account or to_account.
+⚠ Use the literal string "Bank" only.
 
 ---
 
-### ✅ OUTPUT FORMAT (STRICT)
-Return EXACTLY:
+### ✅ STRICT OUTPUT FORMAT
+Return exactly:
 
 {
+  "account_number": string | null,
+  "provider": string | null,
   "transactions": [
     {
       "date": "DD/MM/YYYY" | null,
-      "description": string | null,   ← cleaned, human-readable
+      "description": string | null,
       "transaction_type": "credit" | "debit" | null,
       "transaction_type_detail": "income" | "expense" | "asset" | "liability" | "loan" | "capital" | "advance",
       "from_account": string | null,
       "to_account": string | null,
       "remarks": string | null,
       "amount": string | null,
-      "balance": string | null
+      "balance": string | null,
+      "transaction_id": string | null
     }
   ]
 }
 
-No explanatory text. No markdown. JSON only.
+No markdown. No explanations. JSON only.
+
 """
 
 
@@ -158,6 +216,11 @@ async def parse_statement(file_bytes: bytes, file_ext: str):
 
     try:
         data = json.loads(raw)
-        return {"transactions": data.get("transactions", [])}
+        return {
+            "account_number": data.get("account_number"),
+            "provider": data.get("provider"),
+            "transactions": data.get("transactions", []),
+            "raw": data,
+        }
     except Exception:
         return {"transactions": [], "error": raw}

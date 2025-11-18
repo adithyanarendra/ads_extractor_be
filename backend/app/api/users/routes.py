@@ -10,6 +10,9 @@ from . import schemas as users_schemas
 from . import crud
 from . import models as users_models
 from ...core.database import get_db
+from ..companies.crud import get_companies_for_user
+from ..companies import crud as companies_crud
+
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -62,39 +65,50 @@ async def signup(
 
 @router.post("/login")
 async def login(user: users_schemas.UserLogin, db: AsyncSession = Depends(get_db)):
-    try:
-        if not user.email or user.email.strip() == "":
-            return {"ok": False, "error": "Email is required"}
-        if not user.password or user.password.strip() == "":
-            return {"ok": False, "error": "Password is required"}
+    db_user = await crud.authenticate_user(db, user.email, user.password)
+    if not db_user:
+        return {"ok": False, "error": "Invalid credentials"}
 
-        db_user = await crud.authenticate_user(db, user.email, user.password)
-        if not db_user:
-            return {"ok": False, "error": "Invalid credentials"}
+    companies = await get_companies_for_user(db, db_user.id)
 
-        now = datetime.now(timezone.utc)
-        signup_time = db_user.signup_at
-        if not db_user.is_approved:
-            if signup_time + timedelta(hours=24) < now:
-                return {"ok": False, "error": "User not approved. Contact admin."}
+    token = auth.create_access_token({"sub": db_user.email, "uid": db_user.id})
 
-        token = auth.create_access_token({"sub": db_user.email})
+    if not companies:
         return {
             "ok": True,
             "access_token": token,
             "token_type": "bearer",
             "name": db_user.name,
             "admin": db_user.is_admin,
+            "companies": [],
+            "choose_company": False,
         }
 
-    except SQLAlchemyError as e:
+    if len(companies) == 1:
+        company_id = companies[0].id
+        final_token = auth.create_access_token(
+            {"sub": db_user.email, "uid": db_user.id, "company_id": company_id}
+        )
         return {
-            "ok": False,
-            "error": "Database error",
-            "details": str(e.__cause__ or e),
+            "ok": True,
+            "access_token": final_token,
+            "token_type": "bearer",
+            "name": db_user.name,
+            "admin": db_user.is_admin,
+            "companies": [{"id": companies[0].id, "name": companies[0].name}],
+            "choose_company": False,
+            "company_id": company_id,
         }
-    except Exception as e:
-        return {"ok": False, "error": "Unexpected error", "details": str(e)}
+
+    return {
+        "ok": True,
+        "access_token": token,
+        "token_type": "bearer",
+        "name": db_user.name,
+        "admin": db_user.is_admin,
+        "companies": [{"id": c.id, "name": c.name} for c in companies],
+        "choose_company": True,
+    }
 
 
 @router.get("/logout")
@@ -323,3 +337,37 @@ async def deactivate_user(
     if not user:
         return {"ok": False, "error": "User not found"}
     return {"ok": True, "msg": f"User {user.email} deactivated (login revoked)"}
+
+
+@router.post("/select_company")
+async def select_company(
+    payload: users_schemas.SelectCompanyPayload,
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        return {"ok": False, "error": "Authorization header required"}
+    token = authorization.split(" ")[1]
+    try:
+        current_user = await auth.get_current_user_from_token(token, db)
+    except Exception:
+        return {"ok": False, "error": "Invalid token"}
+
+    if not await companies_crud.is_user_in_company(
+        db, current_user.id, payload.company_id
+    ):
+        return {"ok": False, "error": "User not part of the selected company"}
+
+    final_token = auth.create_access_token(
+        {
+            "sub": current_user.email,
+            "uid": current_user.id,
+            "company_id": payload.company_id,
+        }
+    )
+    return {
+        "ok": True,
+        "access_token": final_token,
+        "token_type": "bearer",
+        "company_id": payload.company_id,
+    }

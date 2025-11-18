@@ -3,8 +3,11 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from ...core.database import Base
+
+# below are called but unused for not found issues - *DO NOT REMOVE*
 from ..user_docs.models import UserDocs
 from ..reports.models import Report
+from ..companies.models import CompanyUser
 
 
 class User(Base):
@@ -48,4 +51,11 @@ class User(Base):
 
     reports = relationship(
         "Report", back_populates="user", cascade="all, delete-orphan"
+    )
+    companies_assoc = relationship(
+        "CompanyUser",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        foreign_keys="CompanyUser.user_id",
     )

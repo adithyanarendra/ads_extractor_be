@@ -46,6 +46,23 @@ async def add_batch(
     return res
 
 
+@router.post("/add-child/{parent_id}")
+async def add_child_batch(
+    parent_id: int,
+    payload: BatchCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(get_current_user),
+):
+    res = await crud.create_batch(
+        db,
+        payload.name,
+        owner_id=current_user.id,
+        invoice_ids=getattr(payload, "invoice_ids", None),
+        parent_id=parent_id,
+    )
+    return res
+
+
 @router.post("/add/{batch_id}")
 async def add_invoices(
     batch_id: int,

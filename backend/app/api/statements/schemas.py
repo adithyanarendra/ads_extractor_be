@@ -35,11 +35,16 @@ class StatementOut(BaseModel):
 
 class StatementListOut(BaseModel):
     id: int
-    owner_id: int
-    statement_type: str
-    file_name: Optional[str]
-    file_url: Optional[str]
-    uploaded_at: Optional[str]
+    transaction_id: Optional[str]
+    transaction_date: Optional[str]
+    description: Optional[str]
+    transaction_type: Optional[str]
+    transaction_type_detail: Optional[str]
+    remarks: Optional[str]
+    from_account: Optional[str]
+    to_account: Optional[str]
+    amount: Optional[str]
+    balance: Optional[str]
 
     class Config:
         from_attributes = True

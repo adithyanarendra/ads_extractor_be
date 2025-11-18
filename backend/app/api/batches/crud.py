@@ -149,24 +149,33 @@ async def list_invoice_file_paths(
         batch = (
             await db.execute(
                 select(models.Batch)
-                .options(selectinload(models.Batch.invoices))
+                .options(
+                    selectinload(models.Batch.invoices),
+                    selectinload(models.Batch.children).selectinload(
+                        models.Batch.invoices
+                    ),
+                )
                 .where(models.Batch.id == batch_id, models.Batch.owner_id == owner_id)
             )
         ).scalar_one_or_none()
+
         if not batch:
             return _err("Batch not found.", "not_found")
 
+        all_invoices = list(batch.invoices or [])
+        for child in batch.children or []:
+            all_invoices.extend(child.invoices or [])
+
         files = []
-        for inv in batch.invoices or []:
-            file_path = getattr(inv, "file_path", None)
-            if file_path:
+        for inv in all_invoices:
+            if inv.file_path:
                 files.append(
                     {
                         "id": inv.id,
                         "invoice_number": getattr(
                             inv, "invoice_number", f"INV-{inv.id}"
                         ),
-                        "file_path": file_path,
+                        "file_path": inv.file_path,
                     }
                 )
 
@@ -182,7 +191,9 @@ async def list_invoice_file_paths(
                 "count": len(files),
             },
         )
+
     except Exception as e:
+        print("ERR list_invoice_file_paths:", e)
         return _err("Failed to fetch invoice file paths.", str(e))
 
 
@@ -348,11 +359,19 @@ async def generate_batch_zip_with_csv(
             # Add PDF to ZIP
             filename = invoice.file_path.split("/")[-1]
             invoice_obj = get_file_from_r2(filename)
+
             if invoice_obj:
                 file_bytes = invoice_obj.read()
-                zip_file.writestr(
-                    f"{invoice.invoice_number or invoice.id}.pdf", file_bytes
-                )
+
+                if "." in filename:
+                    ext = filename.rsplit(".", 1)[1].lower()
+                else:
+                    ext = "bin"
+
+                invoice_number = invoice.invoice_number or f"INV-{invoice.id}"
+                safe_filename = f"{invoice_number}.{ext}"
+
+                zip_file.writestr(safe_filename, file_bytes)
 
             # Add CSV row
             csv_writer.writerow(
@@ -384,17 +403,31 @@ async def get_invoice_ids_for_batch(
         batch = (
             await db.execute(
                 select(models.Batch)
-                .options(selectinload(models.Batch.invoices))
+                .options(
+                    selectinload(models.Batch.invoices),
+                    selectinload(models.Batch.children).selectinload(
+                        models.Batch.invoices
+                    ),
+                )
                 .where(models.Batch.id == batch_id, models.Batch.owner_id == owner_id)
             )
         ).scalar_one_or_none()
+
         if not batch:
             return _err("Batch not found.", "not_found")
 
-        invoice_ids = [inv.id for inv in batch.invoices or []]
+        all_ids = [inv.id for inv in (batch.invoices or [])]
+
+        for child in batch.children or []:
+            all_ids.extend([inv.id for inv in (child.invoices or [])])
+
+        all_ids = list(set(all_ids))
+
         return _ok(
-            "Fetched invoice IDs.", {"batch_id": batch.id, "invoice_ids": invoice_ids}
+            "Fetched invoice IDs.",
+            {"batch_id": batch.id, "invoice_ids": all_ids},
         )
+
     except Exception as e:
         return _err("Failed to fetch invoice IDs.", str(e))
 

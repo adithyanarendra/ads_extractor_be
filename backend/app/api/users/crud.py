@@ -3,6 +3,7 @@ from sqlalchemy.future import select
 from sqlalchemy import delete
 from typing import Optional, Dict, Any
 from ..users import models as users_models
+from ..companies import models as companies_models
 from ...utils.security import get_password_hash
 import datetime
 from app.utils.security import verify_password
@@ -159,3 +160,16 @@ async def deactivate_user(
     await db.commit()
     await db.refresh(user)
     return user
+
+
+async def get_user_companies(db: AsyncSession, user_id: int):
+    stmt = (
+        select(companies_models.Company)
+        .join(
+            companies_models.CompanyUser,
+            companies_models.Company.id == companies_models.CompanyUser.company_id,
+        )
+        .where(companies_models.CompanyUser.user_id == user_id)
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()

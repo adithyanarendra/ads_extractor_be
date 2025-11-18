@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from typing import Optional
-from .models import Company
+from typing import Optional, List
+from .models import Company, CompanyUser
 from datetime import datetime
 
 
@@ -59,3 +59,76 @@ async def delete_company(db: AsyncSession, company_id: int):
     await db.delete(company)
     await db.commit()
     return True
+
+
+async def add_user_to_company(
+    db: AsyncSession,
+    company_id: int,
+    user_id: int,
+    added_by: Optional[int] = None,
+    company_admin: bool = False,
+) -> CompanyUser:
+    q = await db.execute(
+        select(CompanyUser).where(
+            CompanyUser.company_id == company_id, CompanyUser.user_id == user_id
+        )
+    )
+    existing = q.scalars().first()
+    if existing:
+        if existing.company_admin != company_admin:
+            existing.company_admin = company_admin
+            await db.commit()
+            await db.refresh(existing)
+        return existing
+
+    assoc = CompanyUser(
+        company_id=company_id,
+        user_id=user_id,
+        company_admin=company_admin,
+        added_by=added_by,
+    )
+    db.add(assoc)
+    await db.commit()
+    await db.refresh(assoc)
+    return assoc
+
+
+async def remove_user_from_company(
+    db: AsyncSession, company_id: int, user_id: int
+) -> bool:
+    q = await db.execute(
+        select(CompanyUser).where(
+            CompanyUser.company_id == company_id, CompanyUser.user_id == user_id
+        )
+    )
+    assoc = q.scalars().first()
+    if not assoc:
+        return False
+    await db.delete(assoc)
+    await db.commit()
+    return True
+
+
+async def get_companies_for_user(db: AsyncSession, user_id: int) -> List[Company]:
+    stmt = (
+        select(Company)
+        .join(CompanyUser, Company.id == CompanyUser.company_id)
+        .where(CompanyUser.user_id == user_id)
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+async def get_company_users(db: AsyncSession, company_id: int):
+    stmt = select(CompanyUser).where(CompanyUser.company_id == company_id)
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+async def is_user_in_company(db: AsyncSession, user_id: int, company_id: int) -> bool:
+    stmt = await db.execute(
+        select(CompanyUser).where(
+            CompanyUser.user_id == user_id, CompanyUser.company_id == company_id
+        )
+    )
+    return stmt.scalars().first() is not None

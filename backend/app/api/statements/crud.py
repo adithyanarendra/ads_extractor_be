@@ -1,12 +1,15 @@
 import os
 from uuid import uuid4
+import json
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func, cast, Float
 
-from .models import Statement, StatementItem
+from .models import Statement, StatementItem, Account
 from ...utils.r2 import upload_to_r2_bytes, get_file_from_r2
 from .service import parse_statement
 from ...core.database import SessionLocal
+from .reconcile_service import reconcile_statement_with_invoices
+
 
 ALLOWED_TYPES = ("bank", "credit_card")
 
@@ -84,6 +87,29 @@ async def process_statement_background(
                 return
 
             parsed = await parse_statement(file_bytes, f".{file_ext}")
+
+            account_number = parsed.get("account_number")
+            provider = parsed.get("provider")
+
+            if account_number:
+                result = await db.execute(
+                    select(Account).where(
+                        Account.owner_id == stmt.owner_id,
+                        Account.account_number == account_number,
+                    )
+                )
+                account = result.scalars().first()
+
+                if not account:
+                    account = Account(
+                        owner_id=stmt.owner_id,
+                        account_number=account_number,
+                        provider=provider,
+                    )
+                    db.add(account)
+                    await db.flush()
+
+                stmt.account_id = account.id
             transactions = parsed.get("transactions", [])
 
             for tx in transactions:
@@ -97,6 +123,7 @@ async def process_statement_background(
                 db.add(
                     StatementItem(
                         statement_id=statement_id,
+                        transaction_id=tx.get("transaction_id"),
                         transaction_date=tx.get("date"),
                         description=tx.get("description"),
                         transaction_type=tx.get("transaction_type"),
@@ -110,6 +137,8 @@ async def process_statement_background(
                 )
 
             await db.commit()
+            await reconcile_statement_with_invoices(db, stmt.owner_id, statement_id)
+
             print(f"✅ Background parsing completed for statement {statement_id}")
 
         except Exception as e:
@@ -170,6 +199,37 @@ async def list_statement_items(db: AsyncSession, user):
         return {
             "ok": False,
             "message": "Failed to list items",
+            "error": str(e),
+            "data": None,
+        }
+
+
+async def list_accounts(db: AsyncSession, user):
+    try:
+        result = await db.execute(select(Account).where(Account.owner_id == user.id))
+        accounts = result.scalars().all()
+
+        cleaned = [
+            {
+                "id": a.id,
+                "account_number": a.account_number,
+                "provider": a.provider,
+                "created_at": a.created_at,
+            }
+            for a in accounts
+        ]
+
+        return {
+            "ok": True,
+            "message": "Accounts retrieved",
+            "error": None,
+            "data": cleaned,
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "message": "Failed to list accounts",
             "error": str(e),
             "data": None,
         }
@@ -311,6 +371,45 @@ async def delete_statement_item(db: AsyncSession, item_id: int, user):
         }
 
 
+async def delete_account(db: AsyncSession, account_id: int, user):
+    try:
+        account = await db.get(Account, account_id)
+
+        if not account or account.owner_id != user.id:
+            return {
+                "ok": False,
+                "message": "Account not found or access denied",
+                "error": "Unauthorized or missing",
+                "data": None,
+            }
+
+        result = await db.execute(
+            select(Statement).where(Statement.account_id == account.id)
+        )
+        stmts = result.scalars().all()
+
+        for stmt in stmts:
+            await db.delete(stmt)
+
+        await db.delete(account)
+        await db.commit()
+
+        return {
+            "ok": True,
+            "message": "Account deleted successfully",
+            "error": None,
+            "data": {"deleted_account_id": account_id},
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "message": "Failed to delete account",
+            "error": str(e),
+            "data": None,
+        }
+
+
 async def update_statement_item(db: AsyncSession, item_id: int, user, updates: dict):
     try:
         item = await db.get(StatementItem, item_id)
@@ -356,6 +455,53 @@ async def update_statement_item(db: AsyncSession, item_id: int, user, updates: d
         return {
             "ok": False,
             "message": "Failed to update statement item",
+            "error": str(e),
+            "data": None,
+        }
+
+
+async def get_statement_analytics(db: AsyncSession, user):
+    try:
+        stmt = (
+            select(
+                StatementItem.transaction_type,
+                func.sum(cast(StatementItem.amount, Float)).label("total"),
+            )
+            .join(Statement, StatementItem.statement_id == Statement.id)
+            .where(Statement.owner_id == user.id)
+            .group_by(StatementItem.transaction_type)
+        )
+
+        result = await db.execute(stmt)
+        rows = result.all()
+
+        total_revenue = 0.0
+        total_expense = 0.0
+
+        for row in rows:
+            tx_type, total = row
+            if tx_type == "credit":
+                total_revenue = total or 0.0
+            elif tx_type == "debit":
+                total_expense = total or 0.0
+
+        net_profit = (total_revenue or 0) - (total_expense or 0)
+
+        return {
+            "ok": True,
+            "message": "Analytics generated",
+            "error": None,
+            "data": {
+                "total_revenue": round(total_revenue, 2),
+                "total_expense": round(total_expense, 2),
+                "net_profit": round(net_profit, 2),
+            },
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "message": "Failed to calculate analytics",
             "error": str(e),
             "data": None,
         }
