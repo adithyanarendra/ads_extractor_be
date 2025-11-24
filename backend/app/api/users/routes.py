@@ -69,6 +69,19 @@ async def login(user: users_schemas.UserLogin, db: AsyncSession = Depends(get_db
     if not db_user:
         return {"ok": False, "error": "Invalid credentials"}
 
+    if not db_user.is_admin:
+        if db_user.signup_at:
+            now = datetime.now(timezone.utc)
+            free_until = db_user.signup_at + timedelta(days=7)
+
+            if now > free_until and not db_user.is_approved:
+                return {
+                    "ok": False,
+                    "error": "Your 7-day trial has expired. Please contact admin.",
+                    "trial_expired": True,
+                    "trial_ends_at": free_until,
+                }
+
     companies = await get_companies_for_user(db, db_user.id)
 
     token = auth.create_access_token({"sub": db_user.email, "uid": db_user.id})
@@ -143,8 +156,10 @@ async def get_all_users(
         users_data.append(
             {
                 "id": u.id,
+                "name": u.name,
                 "email": u.email,
                 "is_admin": u.is_admin,
+                "is_approved": u.is_approved,
                 "created_by": created_by_email,
                 "created_at": u.created_at,
                 "updated_by": updated_by_email,

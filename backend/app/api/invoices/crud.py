@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import delete, or_, and_, desc, func, Float
+from sqlalchemy import update, delete, or_, and_, desc, func, Float
 import re
 from typing import Optional, Dict
 from . import models as invoices_models
@@ -8,7 +8,7 @@ from datetime import datetime
 import asyncio
 from ...utils.ocr_parser import process_invoice
 from ...core.database import SessionLocal
-
+from app.api.invoices.models import Invoice
 
 def sanitize_total(value):
     """Extracts numeric value from string safely."""
@@ -178,6 +178,18 @@ async def get_invoice_by_id_and_owner(
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
+async def get_invoice_by_id(
+    db: AsyncSession, invoice_id: int
+) -> Optional[invoices_models.Invoice]:
+    stmt = (
+        select(invoices_models.Invoice)
+        .where(
+            invoices_models.Invoice.id == invoice_id,
+        )
+        .execution_options(populate_existing=False, autoflush=False, autocommit=False)
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 async def list_invoices_by_owner(
     db: AsyncSession,
@@ -308,6 +320,8 @@ async def edit_invoice(
         "has_tax_note",
         "tax_note_type",
         "tax_note_amount",
+        "chart_of_account_id",
+        "chart_of_account_name",
     }
     for k, v in corrected_fields.items():
         if k in allowed:
@@ -475,6 +489,15 @@ async def get_invoice_analytics(db: AsyncSession, owner_id: int):
         "top_vendor": {"name": top_vendor[0], "amount": round(top_vendor[1], 2)},
     }
 
+async def update_invoice_qb_id(db: AsyncSession, invoice_id: int, qb_id: str):
+    stmt = (
+        update(Invoice)
+        .where(Invoice.id == invoice_id)
+        .values(qb_id=qb_id)
+        .execution_options(synchronize_session=False)
+    )
+    await db.execute(stmt)
+    await db.commit()
 
 async def list_invoices_by_company(
     db: AsyncSession,

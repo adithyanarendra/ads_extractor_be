@@ -14,7 +14,7 @@ def _normalize_to_ddmmyyyy(s: Optional[str]) -> Optional[str]:
             return dt.strftime("%d-%m-%Y")
         except ValueError:
             pass
-    return s  # keep original if unparseable
+    return s  
 
 def _normalize_dates_in_dict(d: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not isinstance(d, dict):
@@ -24,7 +24,6 @@ def _normalize_dates_in_dict(d: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
         if isinstance(v, str) and (k == "invoice_date" or k.endswith("_date")):
             out[k] = _normalize_to_ddmmyyyy(v)
     return out
-
 
 
 class InvoiceBase(BaseModel):
@@ -45,11 +44,12 @@ class InvoiceBase(BaseModel):
     has_tax_note: Optional[bool] = False
     tax_note_type: Optional[str] = None
     tax_note_amount: Optional[float] = None
+    chart_of_account_id: Optional[str] = None
+    chart_of_account_name: Optional[str] = None
     
     @validator("invoice_date", pre=True)
     def _norm_invoice_date(cls, v):
         return _normalize_to_ddmmyyyy(v)
-
 
 
 class InvoiceOut(InvoiceBase):
@@ -80,6 +80,10 @@ class InvoiceTBRListResponse(BaseModel):
 
     class Config:
         orm_mode = True
+
+class InvoiceCoAUpdate(BaseModel):
+    chart_of_account_id: Optional[str] = None
+    chart_of_account_name: Optional[str] = None
 
 
 class ReviewPayload(BaseModel):

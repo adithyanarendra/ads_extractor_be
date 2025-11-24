@@ -17,6 +17,46 @@ from ..invoices.routes import get_current_user
 router = APIRouter(prefix="/user_docs", tags=["user-docs"])
 
 
+@router.post("/auto")
+async def upload_doc_auto(
+    file: UploadFile = File(...),
+    expiry_date: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    file_bytes = await file.read()
+    file.file.seek(0)
+
+    result = await upload_user_doc(
+        db=db,
+        user_id=current_user.id,
+        doc_type="auto",
+        file_bytes=file_bytes,
+        file=file,
+        expiry_date=expiry_date,
+    )
+
+    if not result.get("ok"):
+        return {
+            "ok": False,
+            "message": result.get("message", "Upload failed"),
+            "error": result.get("error", "Unknown error"),
+        }
+
+    doc_data = result.get("data")
+
+    try:
+        asyncio.create_task(process_doc_metadata(doc_data["id"], file_bytes, "auto"))
+    except Exception as e:
+        print("Meta extraction dispatch error:", e)
+
+    return {
+        "ok": True,
+        "message": result.get("message", "Upload success"),
+        "data": doc_data,
+    }
+
+
 @router.post("/{doc_type}")
 async def upload_doc(
     doc_type: str,

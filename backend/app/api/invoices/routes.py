@@ -1,4 +1,4 @@
-import select
+import select 
 import asyncio
 import os
 from uuid import uuid4
@@ -33,7 +33,8 @@ from ...utils.r2 import (
     s3,
     R2_BUCKET,
 )
-from .schemas import InvoiceDeleteRequest
+from .models import Invoice
+from .schemas import InvoiceDeleteRequest, InvoiceCoAUpdate # InvoiceCoAUpdate imported
 from ...utils.files_service import (
     upload_to_files_service_bytes,
     get_file_from_files_service,
@@ -41,7 +42,7 @@ from ...utils.files_service import (
 
 USE_CLOUD_STORAGE = True
 
-router = APIRouter(prefix="/invoice", tags=["invoices"])
+router = APIRouter(prefix="/invoice", tags=["invoices"]) # APIRouter initialized
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -97,7 +98,6 @@ async def get_invoice_analytics(
         return {"ok": True, "message": "Analytics fetched successfully", "data": data}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-
 
 @router.post("/extract/{invoice_type}")
 async def extract_invoice(
@@ -448,6 +448,48 @@ async def check_duplicate(
         )
 
     return JSONResponse({"is_duplicate": False, "existing_invoice_id": None})
+
+@router.post("/push_to_qb/{invoice_id}")
+async def push_invoice(
+    invoice_id: int,
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # 1. Get invoice from DB
+    invoice = await invoices_crud.get_invoice_by_id_and_owner(db, invoice_id, current_user.id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if not invoice.verified:
+        raise HTTPException(status_code=400, detail="Invoice not verified")
+
+    # 2. Prepare payload for QB
+    invoice_payload = {
+        "Line": [
+            {
+                "Amount": float(invoice.total),
+                "DetailType": "SalesItemLineDetail",
+                "SalesItemLineDetail": {
+                    "ItemRef": {"value": "1", "name": "Services"}  # Replace with proper item mapping
+                }
+            }
+        ],
+        "CustomerRef": {"value": "1"},  # Replace with proper customer mapping
+        "TxnDate": str(invoice.invoice_date),
+        "PrivateNote": f"Invoice {invoice.id} from website",
+    }
+
+    # 3. Push to QuickBooks
+    try:
+        qb_response = push_invoice_to_qb(invoice_payload)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # 4. Save QB invoice ID in DB
+    invoice.qb_invoice_id = qb_response.get("Invoice", {}).get("Id")
+    await db.commit()
+
+    return {"ok": True, "message": "Invoice pushed to QuickBooks", "qb_invoice_id": invoice.qb_invoice_id}
 
 
 @router.post("/retry_extraction/{invoice_id}")

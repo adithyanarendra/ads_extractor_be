@@ -31,7 +31,7 @@ async def upload_user_doc(
     file: UploadFile,
     expiry_date: Optional[str] = None,
 ):
-    if doc_type not in ALLOWED_DOC_TYPES:
+    if doc_type not in ALLOWED_DOC_TYPES and doc_type != "auto":
         return {
             "ok": False,
             "error": "Invalid document type",
@@ -60,12 +60,14 @@ async def upload_user_doc(
 
     file_url = upload_to_r2_bytes(file_bytes, r2_key)
 
-    await db.execute(
-        delete(UserDocs).where(
-            UserDocs.user_id == user_id, UserDocs.file_name.like(f"{doc_type}%")
+    if doc_type != "auto":
+        await db.execute(
+            delete(UserDocs).where(
+                UserDocs.user_id == user_id, UserDocs.file_name.like(f"{doc_type}%")
+            )
         )
-    )
-    await db.commit()
+        await db.commit()
+
     existing = await db.execute(
         select(UserDocs).where(
             UserDocs.user_id == user_id, UserDocs.file_name == doc_type
@@ -73,7 +75,7 @@ async def upload_user_doc(
     )
     existing_doc = existing.scalar_one_or_none()
 
-    if existing_doc:
+    if doc_type != "auto" and existing_doc:
         existing_doc.file_name = doc_type
         existing_doc.file_url = file_url
         existing_doc.expiry_date = expiry_date

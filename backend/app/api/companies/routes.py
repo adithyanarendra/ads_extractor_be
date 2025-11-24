@@ -112,8 +112,35 @@ async def delete_company(
     return {"ok": True, "message": "Company deleted successfully"}
 
 
+@router.get("/{company_id}/users")
+async def get_company_users_route(
+    company_id: int,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = (
+        select(CompanyUser, users_models.User)
+        .join(users_models.User, CompanyUser.user_id == users_models.User.id)
+        .where(CompanyUser.company_id == company_id)
+    )
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    users = [
+        {
+            "id": r.User.id,
+            "email": r.User.email,
+            "company_admin": r.CompanyUser.company_admin,
+        }
+        for r in rows
+    ]
+
+    return {"ok": True, "users": users}
+
+
 @router.post("/{company_id}/add_user")
-async def add_user_to_company(
+async def add_user_to_company_route(
     company_id: int,
     payload: companies_schemas.AddUserPayload,
     current_user=Depends(get_current_user),
@@ -140,16 +167,16 @@ async def add_user_to_company(
         return {"ok": False, "error": "Not authorized to add users to this company"}
 
     # ensure target user exists
-    user = await users_crud.get_user_by_id(db, payload["user_id"])
+    user = await users_crud.get_user_by_id(db, payload.user_id)
     if not user:
         return {"ok": False, "error": "User not found"}
 
     assoc = await add_user_to_company(
         db,
         company_id,
-        payload["user_id"],
+        payload.user_id,
         added_by=current_user.id,
-        company_admin=payload.get("company_admin", False),
+        company_admin=payload.company_admin,
     )
     return {"ok": True, "msg": "User added to company", "assoc_id": assoc.id}
 

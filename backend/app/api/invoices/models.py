@@ -1,7 +1,6 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from sqlalchemy import Column, String
 
 from ...core.database import Base
 
@@ -30,7 +29,6 @@ class Invoice(Base):
     type = Column(String(20), nullable=True)
     batch_id = Column(Integer, ForeignKey("batches.id"), nullable=True)
     batch = relationship("Batch", back_populates="invoices")
-
     owner = relationship("User", back_populates="invoices")
     company = relationship("Company", backref="invoices")
     file_hash = Column(String(64), nullable=False, index=True)
@@ -42,3 +40,7 @@ class Invoice(Base):
     has_tax_note = Column(Boolean, default=False)
     tax_note_type = Column(String(20), nullable=True)
     tax_note_amount = Column(String, nullable=True)
+
+    qb_id = Column(Integer, nullable=True)
+    chart_of_account_id = Column(String, nullable=True)   
+    chart_of_account_name = Column(String, nullable=True) 
