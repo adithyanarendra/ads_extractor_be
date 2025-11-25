@@ -79,3 +79,7 @@ class InventoryItemEdit(BaseModel):
 class InventoryAdjust(BaseModel):
     product_id: int
     delta: float
+
+
+class InvoiceDownloadOptions(BaseModel):
+    thermal_width_mm: Optional[int] = 58

@@ -42,5 +42,6 @@ class Invoice(Base):
     tax_note_amount = Column(String, nullable=True)
 
     qb_id = Column(Integer, nullable=True)
-    chart_of_account_id = Column(String, nullable=True)   
-    chart_of_account_name = Column(String, nullable=True) 
+    chart_of_account_id = Column(String, nullable=True)
+    chart_of_account_name = Column(String, nullable=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=True)

@@ -9,6 +9,8 @@ import asyncio
 from ...utils.ocr_parser import process_invoice
 from ...core.database import SessionLocal
 from app.api.invoices.models import Invoice
+from ..suppliers import crud as suppliers_crud
+
 
 def sanitize_total(value):
     """Extracts numeric value from string safely."""
@@ -78,6 +80,15 @@ async def update_invoice_after_processing(
     invoice.is_duplicate = parsed_fields.get("is_duplicate")
     invoice.is_processing = False
     invoice.extraction_status = "success"
+    if invoice.type == "expense" and invoice.vendor_name:
+        supplier = await suppliers_crud.create_or_get_supplier(
+            db,
+            owner_id=invoice.owner_id,
+            company_id=invoice.company_id,
+            name=invoice.vendor_name,
+            trn=invoice.trn_vat_number,
+        )
+        invoice.supplier_id = supplier.id
 
     await db.commit()
     await db.refresh(invoice)
@@ -158,6 +169,17 @@ async def create_invoice(
         reviewed=False,
         type=fields.get("type") or None,
     )
+    if inv.type == "expense" and inv.vendor_name:
+        supplier = await suppliers_crud.create_or_get_supplier(
+            db,
+            owner_id=owner_id,
+            company_id=company_id,
+            name=inv.vendor_name,
+            trn=inv.trn_vat_number,
+        )
+        inv.supplier_id = supplier.id
+        await db.commit()
+
     db.add(inv)
     await db.commit()
     await db.refresh(inv)
@@ -178,6 +200,7 @@ async def get_invoice_by_id_and_owner(
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
+
 async def get_invoice_by_id(
     db: AsyncSession, invoice_id: int
 ) -> Optional[invoices_models.Invoice]:
@@ -190,6 +213,7 @@ async def get_invoice_by_id(
     )
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
+
 
 async def list_invoices_by_owner(
     db: AsyncSession,
@@ -290,7 +314,14 @@ async def update_invoice_review(
         }
         for k, v in corrected_fields.items():
             if k in allowed:
-                setattr(invoice, k, v)
+                if k in {"before_tax_amount", "tax_amount", "total", "tax_note_amount"}:
+                    if v is not None and v != "":
+                        setattr(invoice, k, str(v))
+                    else:
+                        setattr(invoice, k, None)
+                else:
+                    setattr(invoice, k, v)
+
     await db.commit()
     await db.refresh(invoice)
     return invoice
@@ -325,7 +356,10 @@ async def edit_invoice(
     }
     for k, v in corrected_fields.items():
         if k in allowed:
-            setattr(invoice, k, v)
+            if k in {"before_tax_amount", "tax_amount", "total", "tax_note_amount"}:
+                setattr(invoice, k, str(v) if v not in (None, "") else None)
+            else:
+                setattr(invoice, k, v)
 
     if "has_tax_note" in corrected_fields and str(
         corrected_fields["has_tax_note"]
@@ -489,6 +523,7 @@ async def get_invoice_analytics(db: AsyncSession, owner_id: int):
         "top_vendor": {"name": top_vendor[0], "amount": round(top_vendor[1], 2)},
     }
 
+
 async def update_invoice_qb_id(db: AsyncSession, invoice_id: int, qb_id: str):
     stmt = (
         update(Invoice)
@@ -498,6 +533,7 @@ async def update_invoice_qb_id(db: AsyncSession, invoice_id: int, qb_id: str):
     )
     await db.execute(stmt)
     await db.commit()
+
 
 async def list_invoices_by_company(
     db: AsyncSession,

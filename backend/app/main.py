@@ -8,6 +8,7 @@ from pydantic import GetCoreSchemaHandler
 from typing import Any
 from app.api.quickbooks.routes import router as quickbooks_router
 
+
 class AssumedAsyncSession:
     @classmethod
     def __get_pydantic_core_schema__(
@@ -15,7 +16,10 @@ class AssumedAsyncSession:
     ) -> CoreSchema:
         return core_schema.any_schema()
 
-AsyncSession.__get_pydantic_core_schema__ = AssumedAsyncSession.__get_pydantic_core_schema__
+
+AsyncSession.__get_pydantic_core_schema__ = (
+    AssumedAsyncSession.__get_pydantic_core_schema__
+)
 
 
 from .core.database import engine, Base
@@ -31,27 +35,28 @@ from app.api.integrations.routes import router as integrations_router
 from .api.statements.routes import router as statements_router
 from .api.accounting.routes import router as accounting_router
 from .api.sales.routes import router as sales_invoices_router
+from .api.suppliers.routes import router as suppliers_router
 
 
 app = FastAPI(title="FastAPI Invoice OCR")
 
 origins = [
-    "http://localhost:5173",    
+    "http://localhost:5173",
     "http://localhost:5174",
     "http://127.0.0.1:5173",
-    "http://localhost:3000",    
+    "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://ads-extractor-fe.onrender.com",   
-    "https://aicountant.tech",   
+    "https://ads-extractor-fe.onrender.com",
+    "https://aicountant.tech",
     "49.43.169.79",
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,   
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],    
-    allow_headers=["*"],    
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(users_routes.router)
@@ -66,6 +71,7 @@ app.include_router(integrations_router)
 app.include_router(statements_router)
 app.include_router(accounting_router)
 app.include_router(sales_invoices_router)
+app.include_router(suppliers_router)
 
 
 @app.get("/")
@@ -94,5 +100,6 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     await engine.dispose()
+
 
 app.include_router(quickbooks_router)

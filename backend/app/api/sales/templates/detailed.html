@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <style>
+        body {
+            font-family: 'Arial';
+            font-size: 11px;
+        }
+
+        .section-title {
+            font-weight: bold;
+            margin-top: 10px;
+        }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .table th,
+        .table td {
+            border: 1px solid #444;
+            padding: 4px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h2 style="text-align:center;">TAX INVOICE (DETAILED)</h2>
+
+    <div class="section-title">Seller Details</div>
+    <b>{{ invoice.company_name }}</b><br>
+    {{ invoice.company_address }}<br>
+    TRN: {{ invoice.company_trn }}<br>
+
+    <div class="section-title">Customer Details</div>
+    <b>{{ invoice.customer_name }}</b><br>
+    TRN: {{ invoice.customer_trn or "" }}<br>
+
+    <div class="section-title">Invoice Details</div>
+    Invoice #: {{ invoice.invoice_number }}<br>
+    Date: {{ invoice.invoice_date }}<br>
+
+    <br>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Item</th>
+                <th>Description</th>
+                <th>Qty</th>
+                <th>Unit Price</th>
+                <th>Discount</th>
+                <th>VAT%</th>
+                <th>Total</th>
+            </tr>
+        </thead>
+        <tbody>
+
+            {% for li in invoice.line_items %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ li.name }}</td>
+                <td>{{ li.description or '' }}</td>
+                <td>{{ li.quantity }}</td>
+                <td>{{ li.unit_cost }}</td>
+                <td>{{ li.discount or 0 }}</td>
+                <td>{{ li.vat_percentage }}</td>
+                <td>{{ li.line_total }}</td>
+            </tr>
+            {% endfor %}
+
+        </tbody>
+    </table>
+
+    <br><br>
+    <b>Subtotal:</b> {{ invoice.subtotal }}<br>
+    <b>VAT:</b> {{ invoice.total_vat }}<br>
+    <b>Discount:</b> {{ invoice.discount or 0 }}<br>
+    <b>Total Payable:</b> {{ invoice.total }}<br>
+
+</body>
+
+</html>

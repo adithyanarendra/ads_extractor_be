@@ -231,16 +231,30 @@ def compute_line_item_totals(items):
 
 
 async def create_invoice(db, owner_id, payload):
-    res = await db.execute(select(UserDocs).where(UserDocs.user_id == owner_id))
+    res = await db.execute(
+        select(UserDocs)
+        .where(
+            UserDocs.user_id == owner_id,
+            UserDocs.file_name.in_(["vat_certificate", "ct_certificate"]),
+        )
+        .order_by(UserDocs.updated_at.desc())
+    )
     doc = res.scalars().first()
 
     if not doc:
         return None
 
-    company_name = doc.vat_legal_name_english or doc.legal_name
-    company_name_ar = doc.vat_legal_name_arabic
-    company_address = doc.vat_registered_address or doc.company_address
-    company_trn = doc.vat_tax_registration_number or doc.ct_trn
+    if doc.file_name == "vat_certificate":
+        company_name = doc.vat_legal_name_english or doc.legal_name
+        company_name_ar = doc.vat_legal_name_arabic
+        company_address = doc.vat_registered_address or doc.company_address
+        company_trn = doc.vat_tax_registration_number
+
+    elif doc.file_name == "ct_certificate":
+        company_name = doc.ct_legal_name_en or doc.legal_name
+        company_name_ar = doc.ct_legal_name_ar
+        company_address = doc.ct_registered_address or doc.company_address
+        company_trn = doc.ct_trn
 
     totals = compute_line_item_totals(payload.line_items)
 
@@ -537,3 +551,21 @@ async def sync_products_to_inventory(db, owner_id):
             db.add(inv)
 
     await db.commit()
+
+
+async def get_invoice_with_items(db, owner_id, invoice_id):
+    res = await db.execute(
+        select(models.SalesInvoice)
+        .options(
+            selectinload(models.SalesInvoice.line_items),
+            selectinload(models.SalesInvoice.line_items).selectinload(
+                models.SalesInvoiceLineItem.product
+            ),
+        )
+        .where(
+            models.SalesInvoice.id == invoice_id,
+            models.SalesInvoice.owner_id == owner_id,
+            models.SalesInvoice.is_deleted == False,
+        )
+    )
+    return res.scalar_one_or_none()

@@ -1,9 +1,12 @@
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from io import BytesIO
 
 from ...core.database import get_db
 from ..invoices.routes import get_current_user
 from . import crud, schemas
+from .templates import renderer
 
 router = APIRouter(prefix="/sales", tags=["sales"])
 
@@ -179,3 +182,46 @@ async def adjust_inventory(
         return {"ok": False, "message": "Item not found"}
 
     return {"ok": True, "message": "Quantity updated", "data": updated}
+
+
+@router.post("/invoices/{invoice_id}/download/{invoice_type}")
+async def download_invoice(
+    invoice_id: int,
+    invoice_type: str,
+    payload: schemas.InvoiceDownloadOptions = None,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Download invoice in 3 types:
+    - simple
+    - detailed
+    - thermal (with optional width)
+    """
+
+    invoice = await crud.get_invoice_with_items(db, current_user.id, invoice_id)
+    if not invoice:
+        return {"ok": False, "message": "Invoice not found"}
+
+    invoice_type = invoice_type.lower()
+
+    if invoice_type == "simple":
+        pdf_bytes = await renderer.render_simple_invoice_pdf(invoice)
+
+    elif invoice_type == "detailed":
+        pdf_bytes = await renderer.render_detailed_invoice_pdf(invoice)
+
+    elif invoice_type == "thermal":
+        width = payload.thermal_width_mm if payload else 58
+        pdf_bytes = await renderer.render_thermal_invoice_pdf(invoice, width)
+
+    else:
+        return {"ok": False, "message": "Invalid invoice type"}
+
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename='invoice_{invoice_id}.pdf'"
+        },
+    )
