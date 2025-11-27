@@ -52,7 +52,7 @@
 
     {% for li in invoice.line_items %}
     <div>
-        <b>{{ li.name }}</b><br>
+        <b>{{ li.product.name or li.name or '' }}</b><br>
         QTY: {{ li.quantity }} × {{ li.unit_cost }}
         <span style="float:right;">{{ li.line_total }}</span>
     </div>

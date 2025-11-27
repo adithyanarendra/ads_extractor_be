@@ -117,3 +117,32 @@ async def download_batch_zip(
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/{batch_id}/invoice/{invoice_id}")
+async def delete_invoice_from_batch(
+    batch_id: int,
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(get_current_user),
+):
+    res = await crud.remove_invoice_from_batch(
+        db, batch_id, invoice_id, owner_id=current_user.id
+    )
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("message"))
+    return res
+
+
+@router.delete("/{batch_id}/reset")
+async def reset_batch(
+    batch_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(get_current_user),
+):
+    res = await crud.clear_all_invoices_from_batch(
+        db, batch_id, owner_id=current_user.id
+    )
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("message"))
+    return res

@@ -12,6 +12,8 @@ from .ocr_parser import convert_pdf_to_images
 from .doc_prompts import get_prompt, ALLOWED_DOC_TYPES
 from .doc_fields import DOC_TYPE_MAP
 
+from ..utils.r2 import upload_to_r2_bytes, delete_from_r2
+
 DOC_TYPE_DETECT_PROMPT = f"""
 You are a document classifier for UAE compliance documents.
 
@@ -70,6 +72,14 @@ def parse_date(value):
             return None
 
 
+def slugify(value: str | None) -> str:
+    if not value:
+        return ""
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    return value.strip("_")
+
+
 async def extract_document_meta(
     db: AsyncSession, doc_id: int, file_bytes: bytes, doc_type: str
 ):
@@ -124,16 +134,6 @@ async def extract_document_meta(
             print(f"[extract_document_meta] ❌ classification error {e}")
             detected_doc_type = doc_type
 
-    if detected_doc_type in ALLOWED_DOC_TYPES:
-        await db.execute(
-            delete(UserDocs).where(
-                UserDocs.user_id == doc.user_id,
-                UserDocs.file_name == detected_doc_type,
-                UserDocs.id != doc_id,
-            )
-        )
-        await db.commit()
-
     prompt = get_prompt(doc_type=detected_doc_type)
 
     chat_input = [{"type": "input_text", "text": prompt}]
@@ -170,8 +170,49 @@ async def extract_document_meta(
                 else:
                     setattr(doc, field, value)
 
+        new_file_name = doc.file_name
+
         if detected_doc_type in ALLOWED_DOC_TYPES:
-            doc.file_name = detected_doc_type
+            if detected_doc_type == "passport":
+                person_name = slugify(data.get("passport_name"))
+                new_file_name = f"passport_{person_name or doc.user_id}"
+            elif detected_doc_type == "trade_license":
+                business = slugify(data.get("tl_business_name_en"))
+                new_file_name = f"trade_license_{business or doc.user_id}"
+            elif detected_doc_type == "ct_certificate":
+                legal_en = slugify(data.get("ct_legal_name_en"))
+                trn = slugify(data.get("ct_trn"))
+                suffix = legal_en or trn or str(doc.user_id)
+                new_file_name = f"ct_certificate_{suffix}"
+            elif detected_doc_type == "emirates_id":
+                person_name = slugify(data.get("emirates_id_name"))
+                number = slugify(data.get("emirates_id_number"))
+                suffix = person_name or number or str(doc.user_id)
+                new_file_name = f"emirates_id_{suffix}"
+            elif detected_doc_type == "vat_certificate":
+                legal_en = slugify(data.get("vat_legal_name_english"))
+                holder = slugify(data.get("vat_license_holder_name"))
+                suffix = legal_en or holder or str(doc.user_id)
+                new_file_name = f"vat_certificate_{suffix}"
+            else:
+                new_file_name = detected_doc_type
+
+            doc.doc_type = detected_doc_type
+
+        old_key = doc.file_url.split("r2.dev/")[-1]
+        ext = "." + old_key.split(".")[-1]
+
+        new_key = f"{doc.user_id}/{new_file_name}{ext}"
+
+        new_url = upload_to_r2_bytes(file_bytes, new_key)
+
+        try:
+            delete_from_r2(old_key)
+        except:
+            print(f"[extract_document_meta] ⚠️ Failed to delete old R2 key: {old_key}")
+
+        doc.file_name = new_file_name
+        doc.file_url = new_url
 
         await db.commit()
         await db.refresh(doc)

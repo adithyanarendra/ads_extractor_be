@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 
 class BaseDocSchema(BaseModel):
+    doc_type: Optional[str]
     file_name: str
     file_url: str
     expiry_date: Optional[datetime]

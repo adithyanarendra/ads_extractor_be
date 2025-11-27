@@ -53,3 +53,10 @@ def get_file_from_r2(filename: str):
     except Exception as e:
         print(f"Error fetching file {filename} from R2: {e}")
         return None
+
+
+def delete_from_r2(filename: str):
+    try:
+        s3.delete_object(Bucket=R2_BUCKET, Key=filename)
+    except Exception as e:
+        print(f"Error deleting R2 file {filename}: {e}")

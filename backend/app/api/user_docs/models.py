@@ -11,6 +11,7 @@ class UserDocs(Base):
     user_id = Column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
+    doc_type = Column(String, nullable=True, index=True)
 
     file_name = Column(String, nullable=False)
     file_url = Column(String, nullable=False)
@@ -28,7 +29,6 @@ class UserDocs(Base):
 
     user = relationship("User", back_populates="documents")
 
-    # from here
     legal_name = Column(String, nullable=True)
 
     # VAT Certificate specific fields

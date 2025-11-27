@@ -21,52 +21,28 @@ async def list_products(db, owner_id):
 
 async def add_product(db, owner_id, payload: list[schemas.ProductCreate]):
     created = []
-
     for p in payload:
-        # Fallbacks if None
-        cost = p.cost_per_unit or 0
-        vat = p.vat_percentage or 0
-
-        # Use Decimal to avoid float precision issues
-        cost_dec = Decimal(str(cost))
-        vat_dec = Decimal(str(vat))
-
-        total_dec = cost_dec * (Decimal("1") + vat_dec / Decimal("100"))
-        # Round to 2 decimal places using HALF_UP (normal money rounding)
-        total_dec = total_dec.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
         product = models.SalesProduct(
             owner_id=owner_id,
             name=p.name,
             unique_code=p.unique_code,
-            cost_per_unit=p.cost_per_unit,
-            vat_percentage=p.vat_percentage,
-            without_vat=p.without_vat,
-            total_cost=float(total_dec),
+            vat_percentage=p.vat_percentage or 0,
+            without_vat=p.without_vat or False,
         )
         db.add(product)
         created.append(product)
         await db.flush()
 
-        res = await db.execute(
-            select(models.SalesInventoryItem).where(
-                models.SalesInventoryItem.owner_id == owner_id,
-                models.SalesInventoryItem.product_id == product.id,
-            )
+        inv = models.SalesInventoryItem(
+            owner_id=owner_id,
+            product_id=product.id,
+            product_name=product.name,
+            unique_code=product.unique_code,
+            cost_price=None,
+            selling_price=None,
+            quantity=0,
         )
-        inv = res.scalar_one_or_none()
-
-        if not inv:
-            inv = models.SalesInventoryItem(
-                owner_id=owner_id,
-                product_id=product.id,
-                product_name=product.name,
-                unique_code=product.unique_code,
-                cost_price=product.cost_per_unit,
-                selling_price=None,
-                quantity=0,
-            )
-            db.add(inv)
+        db.add(inv)
 
     await db.commit()
     return created
@@ -84,11 +60,6 @@ async def edit_product(db, owner_id, pid, payload):
 
     for k, v in payload.dict(exclude_unset=True).items():
         setattr(p, k, v)
-
-    if p.cost_per_unit is not None and p.vat_percentage is not None:
-        p.total_cost = p.cost_per_unit * (1 + p.vat_percentage / 100)
-    else:
-        p.total_cost = None
 
     res = await db.execute(
         select(models.SalesInventoryItem).where(
@@ -256,19 +227,55 @@ async def create_invoice(db, owner_id, payload):
         company_address = doc.ct_registered_address or doc.company_address
         company_trn = doc.ct_trn
 
-    totals = compute_line_item_totals(payload.line_items)
+    if not payload.line_items or len(payload.line_items) == 0:
+        manual_total = payload.total or 0
 
+        inv = models.SalesInvoice(
+            owner_id=owner_id,
+            company_name=company_name or "",
+            company_name_arabic=company_name_ar,
+            company_trn=company_trn or "",
+            company_address=company_address,
+            customer_id=payload.customer_id,
+            customer_name=payload.customer_name,
+            customer_trn=payload.customer_trn,
+            invoice_number=payload.invoice_number,
+            notes=payload.notes,
+            subtotal=manual_total,
+            total_vat=0,
+            discount=0,
+            total=manual_total,
+        )
+
+        db.add(inv)
+        await db.commit()
+        await db.refresh(inv)
+
+        return inv
+
+    for li in payload.line_items:
+        if li.product_id:
+            res = await db.execute(
+                select(models.SalesInventoryItem).where(
+                    models.SalesInventoryItem.owner_id == owner_id,
+                    models.SalesInventoryItem.product_id == li.product_id,
+                )
+            )
+            inv = res.scalar_one_or_none()
+            if inv and inv.selling_price is not None:
+                li.unit_cost = inv.selling_price
+
+    totals = compute_line_item_totals(payload.line_items)
     invoice_discount = payload.discount or 0
+
     total_after_discount = totals["subtotal"] + totals["vat"] - invoice_discount
 
     inv = models.SalesInvoice(
         owner_id=owner_id,
-        # auto-loaded seller snapshot
         company_name=company_name or "",
         company_name_arabic=company_name_ar,
         company_trn=company_trn or "",
         company_address=company_address,
-        # customer (optional)
         customer_id=payload.customer_id,
         customer_name=payload.customer_name,
         customer_trn=payload.customer_trn,
@@ -394,7 +401,6 @@ async def add_inventory_items(
                 owner_id=owner_id,
                 name=item.product_name or item.unique_code,
                 unique_code=item.unique_code,
-                cost_per_unit=item.cost_price,
                 vat_percentage=0,
                 without_vat=True,
                 total_cost=float(total_dec),
@@ -472,6 +478,10 @@ async def edit_inventory_item(
     for field, value in data.items():
         if field == "product_id":
             continue
+        if field == "quantity":
+            if value is None:
+                continue
+
         setattr(inv, field, value)
 
     await db.commit()

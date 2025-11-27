@@ -6,7 +6,6 @@ from datetime import datetime
 class ProductCreate(BaseModel):
     name: str
     unique_code: str
-    cost_per_unit: Optional[float] = None
     vat_percentage: Optional[int] = None
     without_vat: Optional[bool] = None
 
@@ -14,7 +13,6 @@ class ProductCreate(BaseModel):
 class ProductEdit(BaseModel):
     name: Optional[str] = None
     unique_code: Optional[str] = None
-    cost_per_unit: Optional[float] = None
     vat_percentage: Optional[int] = None
     without_vat: Optional[bool] = None
 
@@ -50,7 +48,8 @@ class SalesInvoiceCreate(BaseModel):
 
     discount: Optional[float] = None
 
-    line_items: List[SalesLineItemCreate]
+    line_items: List[SalesLineItemCreate] = []
+    total: Optional[float] = None
 
 
 class SalesInvoiceEdit(BaseModel):

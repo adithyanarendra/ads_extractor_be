@@ -21,7 +21,6 @@ class SalesProduct(Base):
 
     name = Column(String, nullable=False)
     unique_code = Column(String, nullable=False, index=True)
-    cost_per_unit = Column(Float, nullable=True)
     vat_percentage = Column(Integer, nullable=True, default=0)
     without_vat = Column(Boolean, nullable=True)
     total_cost = Column(Float, nullable=True)

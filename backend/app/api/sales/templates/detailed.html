@@ -62,7 +62,7 @@
             {% for li in invoice.line_items %}
             <tr>
                 <td>{{ loop.index }}</td>
-                <td>{{ li.name }}</td>
+                <td>{{ li.product.name or li.name }}</td>
                 <td>{{ li.description or '' }}</td>
                 <td>{{ li.quantity }}</td>
                 <td>{{ li.unit_cost }}</td>

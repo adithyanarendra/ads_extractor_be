@@ -23,36 +23,67 @@ def _err(message: str, error: str):
     return {"ok": False, "message": message, "error": error}
 
 
+MONTH_MAP = {m.lower(): i for i, m in enumerate(month_abbr) if m}
+
+
 async def list_batches(db: AsyncSession, owner_id: int) -> Dict[str, Any]:
-    """List all batches with invoice counts"""
     try:
         result = await db.execute(
             select(models.Batch)
             .options(
-                selectinload(models.Batch.invoices),
-                selectinload(models.Batch.children).selectinload(models.Batch.invoices),
+                selectinload(models.Batch.children),
             )
             .where(models.Batch.owner_id == owner_id)
             .order_by(models.Batch.created_at.desc())
         )
-        rows = result.scalars().unique().all()
+        batches = result.scalars().unique().all()
 
         data = []
-        for b in rows:
-            all_invoices = list(b.invoices)
+
+        for b in batches:
+            invoice_ids = set()
+
+            direct_ids = (
+                (
+                    await db.execute(
+                        select(Invoice.id).where(
+                            Invoice.batch_id == b.id, Invoice.owner_id == owner_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            invoice_ids.update(direct_ids)
+
             for child in b.children or []:
-                all_invoices.extend(child.invoices or [])
+                child_ids = (
+                    (
+                        await db.execute(
+                            select(Invoice.id).where(
+                                Invoice.batch_id == child.id,
+                                Invoice.owner_id == owner_id,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                invoice_ids.update(child_ids)
+
             data.append(
                 {
                     "id": b.id,
                     "name": b.name,
-                    "invoice_count": len(all_invoices),
-                    "invoice_ids": [inv.id for inv in all_invoices],
+                    "invoice_count": len(invoice_ids),
+                    "invoice_ids": list(invoice_ids),
                     "parent_id": b.parent_id,
                 }
             )
 
         return _ok("Fetched batches.", data)
+
     except Exception as e:
         return _err("Failed to fetch batches.", str(e))
 
@@ -230,12 +261,10 @@ async def delete_batch_if_unlocked(
 async def add_invoices_to_batch(
     db: AsyncSession, batch_id: int, invoice_ids: List[int], owner_id: int
 ) -> dict:
-    """Add veridied only invoices to an existing batch owned by the user"""
     try:
         if not invoice_ids:
             return _err("No invoices provided to add.", "empty_array")
 
-        # Fetch the batch and ensure it belongs to the owner
         batch = (
             await db.execute(
                 select(models.Batch)
@@ -271,31 +300,6 @@ async def add_invoices_to_batch(
             .where(Invoice.id.in_(verified_ids))
             .values(batch_id=batch_id)
         )
-
-        if batch.parent_id:
-            parent_id = batch.parent_id
-
-            # Fetch parent batch
-            parent_batch = (
-                await db.execute(
-                    select(models.Batch)
-                    .where(models.Batch.id == parent_id)
-                    .options(selectinload(models.Batch.invoices))
-                )
-            ).scalar_one_or_none()
-
-            if parent_batch:
-                existing_parent_invoice_ids = {inv.id for inv in parent_batch.invoices}
-                new_parent_invoice_ids = set(verified_ids) - existing_parent_invoice_ids
-
-                if new_parent_invoice_ids:
-                    parent_batch.invoices.extend(
-                        [
-                            inv
-                            for inv in verified_invoices
-                            if inv.id in new_parent_invoice_ids
-                        ]
-                    )
 
         batch.updated_at = datetime.now(timezone.utc)
         await db.commit()
@@ -432,9 +436,6 @@ async def get_invoice_ids_for_batch(
         return _err("Failed to fetch invoice IDs.", str(e))
 
 
-MONTH_MAP = {m.lower(): i for i, m in enumerate(month_abbr) if m}
-
-
 def parse_batch_range(batch_name: str):
     """
     Parse batch name like 'Feb - Apr 2025' → (2, 4, 2025)
@@ -513,3 +514,115 @@ async def find_matching_batch_for_invoice(
     except Exception as e:
         print("⚠️ find_matching_batch_for_invoice error:", e)
         return None
+
+
+async def remove_invoice_from_batch(
+    db: AsyncSession, batch_id: int, invoice_id: int, owner_id: int
+):
+    try:
+        batch = (
+            await db.execute(
+                select(models.Batch)
+                .options(selectinload(models.Batch.children))
+                .where(models.Batch.id == batch_id, models.Batch.owner_id == owner_id)
+            )
+        ).scalar_one_or_none()
+
+        if not batch:
+            return _err("Batch not found.", "not_found")
+
+        if batch.locked:
+            return _err("Cannot modify a locked batch.", "locked")
+
+        invoice = (
+            await db.execute(
+                select(Invoice).where(
+                    Invoice.id == invoice_id,
+                    Invoice.owner_id == owner_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+        if not invoice:
+            return _err("Invoice not found.", "not_found")
+
+        if invoice.batch_id == batch_id:
+            await db.execute(
+                update(Invoice).where(Invoice.id == invoice_id).values(batch_id=None)
+            )
+
+        else:
+            found_child = None
+            for child in batch.children:
+                if invoice.batch_id == child.id:
+                    found_child = child.id
+                    break
+
+            if not found_child:
+                return _err(
+                    "Invoice does not belong to this batch or its children.",
+                    "invalid_batch_invoice",
+                )
+
+            await db.execute(
+                update(Invoice).where(Invoice.id == invoice_id).values(batch_id=None)
+            )
+
+        batch.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        return _ok(
+            "Invoice removed from batch.",
+            {
+                "batch_id": batch_id,
+                "invoice_id": invoice_id,
+            },
+        )
+
+    except Exception as e:
+        await db.rollback()
+        return _err("Failed to remove invoice from batch.", str(e))
+
+
+async def clear_all_invoices_from_batch(db: AsyncSession, batch_id: int, owner_id: int):
+    try:
+        batch = (
+            await db.execute(
+                select(models.Batch)
+                .options(selectinload(models.Batch.children))
+                .where(models.Batch.id == batch_id, models.Batch.owner_id == owner_id)
+            )
+        ).scalar_one_or_none()
+
+        if not batch:
+            return _err("Batch not found.", "not_found")
+
+        if batch.locked:
+            return _err("Cannot reset a locked batch.", "locked")
+
+        child_ids = [child.id for child in batch.children]
+
+        if child_ids:
+            await db.execute(
+                update(Invoice)
+                .where(Invoice.batch_id.in_(child_ids), Invoice.owner_id == owner_id)
+                .values(batch_id=None)
+            )
+
+        await db.execute(
+            update(Invoice)
+            .where(Invoice.batch_id == batch_id, Invoice.owner_id == owner_id)
+            .values(batch_id=None)
+        )
+
+        batch.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        return _ok(
+            "Batch reset complete. All invoices removed.",
+            {"batch_id": batch_id},
+        )
+
+    except Exception as e:
+        await db.rollback()
+        return _err("Failed to reset batch.", str(e))
