@@ -201,31 +201,59 @@ def compute_line_item_totals(items):
     }
 
 
-async def create_invoice(db, owner_id, payload):
-    res = await db.execute(
-        select(UserDocs)
-        .where(
-            UserDocs.user_id == owner_id,
-            UserDocs.file_name.in_(["vat_certificate", "ct_certificate"]),
+async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
+    doc = None
+
+    if payload.seller_doc_id is not None:
+        res = await db.execute(
+            select(UserDocs).where(
+                UserDocs.user_id == owner_id,
+                UserDocs.id == payload.seller_doc_id,
+            )
         )
-        .order_by(UserDocs.updated_at.desc())
-    )
-    doc = res.scalars().first()
+        doc = res.scalar_one_or_none()
+    else:
+        res = await db.execute(
+            select(UserDocs)
+            .where(
+                UserDocs.user_id == owner_id,
+                UserDocs.file_name.in_(["vat_certificate", "ct_certificate"]),
+            )
+            .order_by(UserDocs.updated_at.desc())
+        )
+        doc = res.scalars().first()
 
-    if not doc:
+    company_name = None
+    company_name_ar = None
+    company_address = None
+    company_trn = None
+
+    if doc:
+        if doc.file_name == "vat_certificate":
+            company_name = doc.vat_legal_name_english or doc.legal_name
+            company_name_ar = doc.vat_legal_name_arabic
+            company_address = doc.vat_registered_address or doc.company_address
+            company_trn = doc.vat_tax_registration_number
+
+        elif doc.file_name == "ct_certificate":
+            company_name = doc.ct_legal_name_en or doc.legal_name
+            company_name_ar = doc.ct_legal_name_ar
+            company_address = doc.ct_registered_address or doc.company_address
+            company_trn = doc.ct_trn
+
+    if not doc and (
+        payload.manual_seller_company_en
+        or payload.manual_seller_trn
+        or payload.manual_seller_address
+        or payload.manual_seller_company_ar
+    ):
+        company_name = payload.manual_seller_company_en or ""
+        company_name_ar = payload.manual_seller_company_ar
+        company_address = payload.manual_seller_address
+        company_trn = payload.manual_seller_trn or ""
+
+    if not company_name or not company_trn:
         return None
-
-    if doc.file_name == "vat_certificate":
-        company_name = doc.vat_legal_name_english or doc.legal_name
-        company_name_ar = doc.vat_legal_name_arabic
-        company_address = doc.vat_registered_address or doc.company_address
-        company_trn = doc.vat_tax_registration_number
-
-    elif doc.file_name == "ct_certificate":
-        company_name = doc.ct_legal_name_en or doc.legal_name
-        company_name_ar = doc.ct_legal_name_ar
-        company_address = doc.ct_registered_address or doc.company_address
-        company_trn = doc.ct_trn
 
     if not payload.line_items or len(payload.line_items) == 0:
         manual_total = payload.total or 0
@@ -489,9 +517,6 @@ async def edit_inventory_item(
 
 
 async def adjust_inventory_for_invoice(db, owner_id: int, line_items: list[dict]):
-    """
-    line_items is the list from compute_line_item_totals()['line_items']
-    """
     for li in line_items:
         pid = li.get("product_id")
         qty = li.get("quantity") or 0
@@ -532,13 +557,11 @@ async def adjust_inventory_quantity(db, owner_id: int, product_id: int, delta: f
 
 
 async def sync_products_to_inventory(db, owner_id):
-    # 1. get all products
     res = await db.execute(
         select(models.SalesProduct).where(models.SalesProduct.owner_id == owner_id)
     )
     products = res.scalars().all()
 
-    # 2. get inventory rows for fast lookup
     inv_res = await db.execute(
         select(models.SalesInventoryItem).where(
             models.SalesInventoryItem.owner_id == owner_id
@@ -546,7 +569,6 @@ async def sync_products_to_inventory(db, owner_id):
     )
     inventory = {inv.product_id: inv for inv in inv_res.scalars().all()}
 
-    # 3. loop and create missing inventory rows
     for p in products:
         if p.id not in inventory:
             inv = models.SalesInventoryItem(

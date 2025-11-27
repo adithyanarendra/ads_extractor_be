@@ -51,6 +51,13 @@ class SalesInvoiceCreate(BaseModel):
     line_items: List[SalesLineItemCreate] = []
     total: Optional[float] = None
 
+    seller_doc_id: Optional[int] = None
+
+    manual_seller_company_en: Optional[str] = None
+    manual_seller_company_ar: Optional[str] = None
+    manual_seller_trn: Optional[str] = None
+    manual_seller_address: Optional[str] = None
+
 
 class SalesInvoiceEdit(BaseModel):
     corrected_fields: dict
