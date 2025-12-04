@@ -604,3 +604,21 @@ async def get_invoice_by_id_and_company(
     )
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def soft_delete_invoice(
+    db: AsyncSession, invoice_id: int, deleted_by: int
+) -> bool:
+    stmt = select(invoices_models.Invoice).where(
+        invoices_models.Invoice.id == invoice_id
+    )
+    result = await db.execute(stmt)
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        return False
+    invoice.is_deleted = True
+    invoice.deleted_at = datetime.utcnow()
+    invoice.deleted_by = deleted_by
+    await db.commit()
+    await db.refresh(invoice)
+    return True

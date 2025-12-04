@@ -8,35 +8,13 @@ from . import crud as companies_crud
 from . import schemas as companies_schemas
 from ..users import models as users_models
 from ..users import crud as users_crud
-from ..companies.crud import (
-    add_user_to_company,
-)
-from ..users import crud as users_crud
 from .models import CompanyUser
 
 router = APIRouter(prefix="/companies", tags=["companies"])
 
 
-async def get_current_user(
-    token: str = Depends(auth.oauth2_scheme),
-    db: AsyncSession = Depends(get_db),
-):
-    decoded = auth.decode_token(token)
-    if not decoded.get("ok"):
-        raise HTTPException(
-            status_code=401,
-            detail=decoded.get("error", "Invalid or expired token"),
-        )
-
-    email = decoded.get("email")
-    if not email:
-        raise HTTPException(status_code=401, detail="Token missing email")
-
-    user = await users_crud.get_user_by_email(db, email)
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-
-    return user
+async def get_current_user(current_user=Depends(auth.get_current_user)):
+    return current_user
 
 
 @router.post("/create")
@@ -146,39 +124,51 @@ async def add_user_to_company_route(
     current_user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-
-    # check jursidiction: current_user must be site admin or company_admin for that company
-    allowed = False
-    if current_user.is_admin:
-        allowed = True
+    if current_user.is_super_admin:
+        pass
     else:
-        # check if current_user is company_admin
-        stmt = await db.execute(
+        q = await db.execute(
             select(CompanyUser).where(
                 CompanyUser.company_id == company_id,
                 CompanyUser.user_id == current_user.id,
             )
         )
-        assoc = stmt.scalars().first()
-        if assoc and assoc.company_admin:
-            allowed = True
+        assoc = q.scalar_one_or_none()
+        if not assoc or not assoc.company_admin:
+            if not (
+                getattr(current_user, "jwt_is_accountant", False)
+                and not current_user.is_admin
+            ):
+                return {"ok": False, "error": "Not authorized"}
 
-    if not allowed:
-        return {"ok": False, "error": "Not authorized to add users to this company"}
-
-    # ensure target user exists
-    user = await users_crud.get_user_by_id(db, payload.user_id)
-    if not user:
+    target = await users_crud.get_user_by_id(db, payload.user_id)
+    if not target:
         return {"ok": False, "error": "User not found"}
 
-    assoc = await add_user_to_company(
+    if getattr(current_user, "jwt_is_accountant", False) and not current_user.is_admin:
+        if payload.company_admin and payload.user_id != current_user.id:
+            return {
+                "ok": False,
+                "error": "Accountant cannot assign another user as company admin",
+            }
+
+        if payload.company_admin and payload.user_id == current_user.id:
+            has_admin = await companies_crud.company_has_admin(db, company_id)
+            if has_admin:
+                return {
+                    "ok": False,
+                    "error": "Company already has admin; cannot self-assign",
+                }
+
+    new_assoc = await companies_crud.add_user_to_company(
         db,
         company_id,
         payload.user_id,
         added_by=current_user.id,
         company_admin=payload.company_admin,
     )
-    return {"ok": True, "msg": "User added to company", "assoc_id": assoc.id}
+
+    return {"ok": True, "msg": "User added", "assoc_id": new_assoc.id}
 
 
 @router.delete("/{company_id}/remove_user/{user_id}")
@@ -188,9 +178,61 @@ async def remove_user_from_company(
     current_user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # similar authorization checks as above
-    # ...
+
+    if not current_user.is_super_admin:
+        q = await db.execute(
+            select(CompanyUser).where(
+                CompanyUser.company_id == company_id,
+                CompanyUser.user_id == current_user.id,
+            )
+        )
+        assoc = q.scalar_one_or_none()
+        if not assoc or not assoc.company_admin:
+            raise HTTPException(status_code=403, detail="Not authorized")
+
     success = await companies_crud.remove_user_from_company(db, company_id, user_id)
     if not success:
         raise HTTPException(status_code=404, detail="Association not found")
-    return {"ok": True, "msg": "User removed from company"}
+
+    return {"ok": True, "msg": "User removed"}
+
+
+@router.post("/convert_user_to_company")
+async def convert_user_to_company(
+    payload: companies_schemas.CompanyCreate,
+    user_id: int | None = None,
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    target_user = None
+    if user_id is None:
+        target_user = current_user
+    else:
+        if not (
+            current_user.is_admin or getattr(current_user, "jwt_is_super_admin", False)
+        ):
+            raise HTTPException(
+                status_code=403, detail="Not authorized to convert another user"
+            )
+        target_user = await users_crud.get_user_by_id(db, user_id)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="Target user not found")
+
+    company = await companies_crud.create_company(
+        db, payload.dict(), current_user.email
+    )
+
+    assoc = await companies_crud.add_user_to_company(
+        db,
+        company.id,
+        target_user.id,
+        added_by=current_user.id,
+        company_admin=True,
+    )
+
+    return {
+        "ok": True,
+        "msg": "User converted to company successfully",
+        "company": companies_schemas.CompanyOut.from_orm(company),
+        "assoc_id": assoc.id,
+    }

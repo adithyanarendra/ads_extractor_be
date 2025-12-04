@@ -32,11 +32,11 @@ async def create_statement(
             }
 
         file_ext = os.path.splitext(filename)[1]
-        file_key = f"statements/{user.id}/{uuid4()}{file_ext}"
+        file_key = f"statements/{user.effective_user_id}/{uuid4()}{file_ext}"
         file_url = upload_to_r2_bytes(file_bytes, file_key)
 
         stmt = Statement(
-            owner_id=user.id,
+            owner_id=user.effective_user_id,
             statement_type=statement_type,
             file_name=filename,
             file_key=file_key,
@@ -148,7 +148,7 @@ async def process_statement_background(
 async def list_statements(db: AsyncSession, user):
     try:
         result = await db.execute(
-            select(Statement).where(Statement.owner_id == user.id)
+            select(Statement).where(Statement.owner_id == user.effective_user_id)
         )
         statements = result.scalars().all()
 
@@ -184,7 +184,7 @@ async def list_statement_items(db: AsyncSession, user):
         result = await db.execute(
             select(StatementItem)
             .join(Statement, StatementItem.statement_id == Statement.id)
-            .where(Statement.owner_id == user.id)
+            .where(Statement.owner_id == user.effective_user_id)
         )
         rows = result.scalars().all()
 
@@ -206,7 +206,9 @@ async def list_statement_items(db: AsyncSession, user):
 
 async def list_accounts(db: AsyncSession, user):
     try:
-        result = await db.execute(select(Account).where(Account.owner_id == user.id))
+        result = await db.execute(
+            select(Account).where(Account.owner_id == user.effective_user_id)
+        )
         accounts = result.scalars().all()
 
         cleaned = [
@@ -239,7 +241,7 @@ async def get_statement(db: AsyncSession, statement_id: int, user):
     try:
         stmt = await db.get(Statement, statement_id)
 
-        if not stmt or stmt.owner_id != user.id:
+        if not stmt or stmt.owner_id != user.effective_user_id:
             return {
                 "ok": False,
                 "message": "Statement not found or access denied",
@@ -303,7 +305,7 @@ async def delete_statement(db: AsyncSession, statement_id: int, user):
     try:
         stmt = await db.get(Statement, statement_id)
 
-        if not stmt or stmt.owner_id != user.id:
+        if not stmt or stmt.owner_id != user.effective_user_id:
             return {
                 "ok": False,
                 "message": "Statement not found or access denied",
@@ -344,7 +346,7 @@ async def delete_statement_item(db: AsyncSession, item_id: int, user):
 
         # Ensure item belongs to the user
         stmt = await db.get(Statement, item.statement_id)
-        if not stmt or stmt.owner_id != user.id:
+        if not stmt or stmt.owner_id != user.effective_user_id:
             return {
                 "ok": False,
                 "message": "Access denied",
@@ -375,7 +377,7 @@ async def delete_account(db: AsyncSession, account_id: int, user):
     try:
         account = await db.get(Account, account_id)
 
-        if not account or account.owner_id != user.id:
+        if not account or account.owner_id != user.effective_user_id:
             return {
                 "ok": False,
                 "message": "Account not found or access denied",
@@ -422,7 +424,7 @@ async def update_statement_item(db: AsyncSession, item_id: int, user, updates: d
             }
 
         stmt = await db.get(Statement, item.statement_id)
-        if not stmt or stmt.owner_id != user.id:
+        if not stmt or stmt.owner_id != user.effective_user_id:
             return {
                 "ok": False,
                 "message": "Access denied",
@@ -468,7 +470,7 @@ async def get_statement_analytics(db: AsyncSession, user):
                 func.sum(cast(StatementItem.amount, Float)).label("total"),
             )
             .join(Statement, StatementItem.statement_id == Statement.id)
-            .where(Statement.owner_id == user.id)
+            .where(Statement.owner_id == user.effective_user_id)
             .group_by(StatementItem.transaction_type)
         )
 

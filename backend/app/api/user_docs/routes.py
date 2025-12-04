@@ -14,7 +14,9 @@ async def get_docs_timeline(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    return await user_docs_crud.get_user_docs_for_timeline(db, current_user.id)
+    return await user_docs_crud.get_user_docs_for_timeline(
+        db, current_user.effective_user_id
+    )
 
 
 @router.post("/auto")
@@ -29,7 +31,7 @@ async def upload_doc_auto(
 
     result = await user_docs_crud.upload_user_doc(
         db=db,
-        user_id=current_user.id,
+        user_id=current_user.effective_user_id,
         doc_type="auto",
         file_bytes=file_bytes,
         file=file,
@@ -64,7 +66,7 @@ async def get_all_docs(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    return await user_docs_crud.list_user_docs(db, current_user.id)
+    return await user_docs_crud.list_user_docs(db, current_user.effective_user_id)
 
 
 @router.get("/details/{doc_id}")
@@ -73,7 +75,9 @@ async def get_doc_details(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    result = await user_docs_crud.get_user_doc_details(db, current_user.id, doc_id)
+    result = await user_docs_crud.get_user_doc_details(
+        db, current_user.effective_user_id, doc_id
+    )
 
     if not result.get("ok"):
         return {
@@ -96,7 +100,7 @@ async def get_doc(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    return await user_docs_crud.get_user_doc(db, current_user.id, doc_id)
+    return await user_docs_crud.get_user_doc(db, current_user.effective_user_id, doc_id)
 
 
 @router.delete("/{doc_id}")
@@ -105,5 +109,7 @@ async def remove_doc(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    result = await user_docs_crud.delete_user_doc(db, current_user.id, doc_id)
+    result = await user_docs_crud.delete_user_doc(
+        db, current_user.effective_user_id, doc_id
+    )
     return result

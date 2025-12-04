@@ -8,6 +8,7 @@ from ...core.database import Base
 from ..user_docs.models import UserDocs
 from ..reports.models import Report
 from ..companies.models import CompanyUser
+from ..invoices.models import Invoice
 
 
 class User(Base):
@@ -17,7 +18,11 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     name = Column(String, nullable=True)
+
     is_admin = Column(Boolean, default=False)
+    is_super_admin = Column(Boolean, default=False, nullable=False)
+    is_accountant = Column(Boolean, default=False, nullable=False)
+    role = Column(String, nullable=True)
 
     is_approved = Column(Boolean, default=False)
     signup_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -35,7 +40,10 @@ class User(Base):
     )
 
     invoices = relationship(
-        "Invoice", back_populates="owner", cascade="all, delete-orphan"
+        "Invoice",
+        back_populates="owner",
+        cascade="all, delete-orphan",
+        foreign_keys="Invoice.owner_id",
     )
 
     batches = relationship(

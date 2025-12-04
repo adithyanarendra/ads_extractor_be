@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Body
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -10,8 +10,8 @@ from . import schemas as users_schemas
 from . import crud
 from . import models as users_models
 from ...core.database import get_db
-from ..companies.crud import get_companies_for_user
 from ..companies import crud as companies_crud
+from ..companies.models import CompanyUser
 
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -34,16 +34,21 @@ async def signup(
             return {"ok": False, "error": "Email already registered"}
 
         created_by_user_id = None
+        creator = None
         if authorization and authorization.startswith("Bearer "):
             token = authorization.split(" ")[1]
             try:
-                current_user = await auth.get_current_user_from_token(token, db)
-                created_by_user_id = current_user.id
+                creator = await auth.get_current_user_from_token(token, db)
+                created_by_user_id = creator.id
             except Exception:
                 created_by_user_id = None
 
         db_user = await crud.create_user(
-            db, user.email, user.password, name=user.name, created_by=created_by_user_id
+            db,
+            user.email,
+            user.password,
+            name=user.name,
+            created_by=created_by_user_id,
         )
         return {
             "ok": True,
@@ -69,58 +74,173 @@ async def login(user: users_schemas.UserLogin, db: AsyncSession = Depends(get_db
     if not db_user:
         return {"ok": False, "error": "Invalid credentials"}
 
-    if not db_user.is_admin:
-        if db_user.signup_at:
-            now = datetime.now(timezone.utc)
-            free_until = db_user.signup_at + timedelta(days=7)
+    is_super_admin = db_user.is_admin or db_user.is_super_admin
 
-            if now > free_until and not db_user.is_approved:
-                return {
-                    "ok": False,
-                    "error": "Your 7-day trial has expired. Please contact admin.",
-                    "trial_expired": True,
-                    "trial_ends_at": free_until,
-                }
+    companies = await crud.get_user_companies(db, db_user.id)
 
-    companies = await get_companies_for_user(db, db_user.id)
+    base_token = auth.create_access_token(
+        {
+            "sub": db_user.email,
+            "uid": db_user.id,
+            "is_admin": is_super_admin,
+            "is_accountant": db_user.is_accountant,
+        }
+    )
 
-    token = auth.create_access_token({"sub": db_user.email, "uid": db_user.id})
-
-    if not companies:
+    if len(companies) == 0:
         return {
             "ok": True,
-            "access_token": token,
+            "access_token": base_token,
             "token_type": "bearer",
             "name": db_user.name,
-            "admin": db_user.is_admin,
+            "is_super_admin": is_super_admin,
+            "is_accountant": db_user.is_accountant,
             "companies": [],
             "choose_company": False,
         }
 
     if len(companies) == 1:
-        company_id = companies[0].id
+        company = companies[0]
+
+        cu = await db.execute(
+            select(CompanyUser).where(
+                CompanyUser.company_id == company.id, CompanyUser.user_id == db_user.id
+            )
+        )
+        cu = cu.scalar_one()
+        role = "admin" if cu.company_admin else "user"
+
         final_token = auth.create_access_token(
-            {"sub": db_user.email, "uid": db_user.id, "company_id": company_id}
+            {
+                "sub": db_user.email,
+                "uid": db_user.id,
+                "is_admin": is_super_admin,
+                "is_accountant": db_user.is_accountant,
+                "company_id": company.id,
+                "company_role": role,
+            }
         )
         return {
             "ok": True,
             "access_token": final_token,
             "token_type": "bearer",
             "name": db_user.name,
-            "admin": db_user.is_admin,
-            "companies": [{"id": companies[0].id, "name": companies[0].name}],
+            "is_super_admin": is_super_admin,
+            "is_accountant": db_user.is_accountant,
+            "companies": [{"id": company.id, "name": company.name}],
             "choose_company": False,
-            "company_id": company_id,
+            "company_id": company.id,
+            "company_role": role,
         }
 
     return {
         "ok": True,
-        "access_token": token,
+        "access_token": base_token,
         "token_type": "bearer",
         "name": db_user.name,
-        "admin": db_user.is_admin,
+        "is_super_admin": is_super_admin,
+        "is_accountant": db_user.is_accountant,
         "companies": [{"id": c.id, "name": c.name} for c in companies],
         "choose_company": True,
+    }
+
+
+@router.post("/accountant/select_client")
+async def accountant_select_client(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        return {"ok": False, "error": "Authorization required"}
+    token = authorization.split(" ")[1]
+    current_user = await auth.get_current_user_from_token(token, db)
+
+    if not (
+        getattr(current_user, "jwt_is_super_admin", False) or current_user.is_admin
+    ):
+        if not getattr(current_user, "jwt_is_accountant", False):
+            return {"ok": False, "error": "Not authorized"}
+
+    user_id = payload.get("user_id")
+    if not user_id:
+        return {"ok": False, "error": "user_id is required"}
+
+    target = await crud.get_user_by_id(db, user_id)
+    if not target:
+        return {"ok": False, "error": "Target user not found"}
+
+    if target.is_admin or target.is_super_admin or target.is_accountant:
+        return {"ok": False, "error": "Cannot act as privileged account"}
+
+    final_token = auth.create_access_token(
+        {
+            "sub": current_user.email,
+            "uid": current_user.id,
+            "is_admin": current_user.is_super_admin,
+            "is_accountant": current_user.is_accountant,
+            "acting_user_id": target.id,
+        }
+    )
+
+    return {"ok": True, "access_token": final_token, "acting_user_id": target.id}
+
+
+@router.get("/accountant/users")
+async def accountant_list_users(
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        return {"ok": False, "error": "Authorization required"}
+    token = authorization.split(" ")[1]
+    current_user = await auth.get_current_user_from_token(token, db)
+
+    if not (
+        getattr(current_user, "jwt_is_accountant", False) or current_user.is_super_admin
+    ):
+        return {"ok": False, "error": "Not authorized"}
+
+    users = await crud.list_all_users(db)
+    out = [{"id": u.id, "name": u.name or u.email, "email": u.email} for u in users]
+    return {"ok": True, "users": out}
+
+
+@router.put("/make_accountant/{user_id}")
+async def make_accountant(
+    user_id: int,
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        return {"ok": False, "error": "Authorization required"}
+    token = authorization.split(" ")[1]
+    current_user = await auth.get_current_user_from_token(token, db)
+
+    if not (
+        current_user.is_admin or getattr(current_user, "jwt_is_super_admin", False)
+    ):
+        return {"ok": False, "error": "Not authorized to change accountant flag"}
+
+    is_accountant_val = payload.get("is_accountant")
+    if is_accountant_val is None:
+        return {"ok": False, "error": "is_accountant boolean required in body"}
+
+    updated_user = await crud.set_user_accountant(
+        db, user_id, bool(is_accountant_val), updated_by=current_user.id
+    )
+    if not updated_user:
+        return {"ok": False, "error": "User not found"}
+
+    return {
+        "ok": True,
+        "msg": f"User {updated_user.email} is_accountant set to {updated_user.is_accountant}",
+        "user": {
+            "id": updated_user.id,
+            "email": updated_user.email,
+            "is_accountant": updated_user.is_accountant,
+        },
     }
 
 
@@ -136,43 +256,21 @@ async def get_all_users(
 ):
     users = await crud.list_all_users(db)
 
-    async def get_user_email(user_id: Optional[int]) -> Optional[str]:
-        if not user_id:
-            return None
-        user = await crud.get_user_by_id(db, user_id)
-        return user.email if user else None
+    data = [
+        {
+            "id": u.id,
+            "email": u.email,
+            "is_admin": u.is_admin,
+            "is_accountant": u.is_accountant,
+        }
+        for u in users
+    ]
 
-    users_data = []
-
-    for u in users:
-        created_by_email, updated_by_email, last_updated_by_email = (
-            await asyncio.gather(
-                get_user_email(u.created_by),
-                get_user_email(u.updated_by),
-                get_user_email(u.last_updated_by),
-            )
-        )
-
-        users_data.append(
-            {
-                "id": u.id,
-                "name": u.name,
-                "email": u.email,
-                "is_admin": u.is_admin,
-                "is_approved": u.is_approved,
-                "created_by": created_by_email,
-                "created_at": u.created_at,
-                "updated_by": updated_by_email,
-                "updated_at": u.updated_at,
-                "last_updated_by": last_updated_by_email,
-                "last_updated_at": u.last_updated_at,
-            }
-        )
-    return {"ok": True, "users": users_data}
+    return {"ok": True, "users": data}
 
 
-@router.delete("/delete/{user_id}")
-async def delete_user_account(
+@router.get("/details/{user_id}")
+async def get_user_details(
     user_id: int,
     db: AsyncSession = Depends(get_db),
     current_admin=Depends(auth.get_current_admin),
@@ -180,8 +278,73 @@ async def delete_user_account(
     user = await crud.get_user_by_id(db, user_id)
     if not user:
         return {"ok": False, "error": "User not found"}
-    await crud.delete_user(db, user_id)
-    return {"ok": True, "msg": f"User {user.email} deleted"}
+
+    ids = [
+        uid for uid in [user.created_by, user.updated_by, user.last_updated_by] if uid
+    ]
+    lookup = {}
+
+    if ids:
+        result = await db.execute(
+            select(users_models.User.id, users_models.User.email).where(
+                users_models.User.id.in_(ids)
+            )
+        )
+        lookup = {uid: email for uid, email in result.all()}
+
+    return {
+        "ok": True,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "is_admin": user.is_admin,
+            "is_accountant": user.is_accountant,
+            "is_super_admin": user.is_super_admin,
+            "is_approved": user.is_approved,
+            "created_by": lookup.get(user.created_by),
+            "created_at": user.created_at,
+            "updated_by": lookup.get(user.updated_by),
+            "updated_at": user.updated_at,
+            "last_updated_by": lookup.get(user.last_updated_by),
+            "last_updated_at": user.last_updated_at,
+            "signup_at": user.signup_at,
+        },
+    }
+
+
+@router.delete("/delete/{user_id}")
+async def delete_user_account(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        return {"ok": False, "error": "Authorization required"}
+
+    token = authorization.split(" ")[1]
+    current_user = await auth.get_current_user_from_token(token, db)
+
+    if current_user.id == user_id:
+        return {"ok": False, "error": "You cannot delete yourself"}
+
+    target = await crud.get_user_by_id(db, user_id)
+    if not target:
+        return {"ok": False, "error": "User not found"}
+
+    if getattr(current_user, "jwt_is_accountant", False):
+
+        if target.is_admin or target.is_super_admin or target.is_accountant:
+            return {"ok": False, "error": "Not authorized to delete privileged users"}
+
+        await crud.delete_user(db, user_id)
+        return {"ok": True, "msg": f"User {target.email} deleted by accountant"}
+
+    if current_user.is_admin or getattr(current_user, "jwt_is_super_admin", False):
+        await crud.delete_user(db, user_id)
+        return {"ok": True, "msg": f"User {target.email} deleted"}
+
+    return {"ok": False, "error": "Not authorized"}
 
 
 @router.delete("/delete_admin/{user_id}")
@@ -277,10 +440,27 @@ async def update_user(
     except Exception:
         return {"ok": False, "error": "Invalid token"}
 
-    target_user_id = payload.user_id if hasattr(payload, "user_id") else current_user.id
+    target_user_id = (
+        payload.user_id
+        if hasattr(payload, "user_id") and payload.user_id
+        else current_user.id
+    )
 
-    if target_user_id != current_user.id and not current_user.is_admin:
-        return {"ok": False, "error": "Not authorized to update other users"}
+    if target_user_id != current_user.id:
+        if current_user.is_admin or getattr(current_user, "jwt_is_super_admin", False):
+            pass
+        elif getattr(current_user, "jwt_is_accountant", False):
+
+            target = await crud.get_user_by_id(db, target_user_id)
+            if not target:
+                return {"ok": False, "error": "Target user not found"}
+            if target.is_admin or target.is_accountant or target.is_super_admin:
+                return {
+                    "ok": False,
+                    "error": "Not authorized to update privileged users",
+                }
+        else:
+            return {"ok": False, "error": "Not authorized to update other users"}
 
     target_user = await crud.get_user_by_id(db, target_user_id)
     if not target_user:
@@ -289,6 +469,12 @@ async def update_user(
     updated_fields = payload.dict(exclude_unset=True, exclude={"user_id"})
     if not updated_fields:
         return {"ok": False, "error": "No fields to update"}
+
+    if "is_accountant" in updated_fields:
+        if not (
+            current_user.is_admin or getattr(current_user, "jwt_is_super_admin", False)
+        ):
+            return {"ok": False, "error": "Not authorized to change accountant flag"}
 
     updated_user = await crud.update_user_fields(
         db, target_user.id, updated_fields, updated_by=current_user.id
@@ -302,6 +488,7 @@ async def update_user(
             "email": updated_user.email,
             "name": updated_user.name,
             "is_admin": updated_user.is_admin,
+            "is_accountant": updated_user.is_accountant,
         },
     }
 
@@ -361,28 +548,37 @@ async def select_company(
     authorization: Optional[str] = Header(None),
 ):
     if not authorization or not authorization.startswith("Bearer "):
-        return {"ok": False, "error": "Authorization header required"}
-    token = authorization.split(" ")[1]
-    try:
-        current_user = await auth.get_current_user_from_token(token, db)
-    except Exception:
-        return {"ok": False, "error": "Invalid token"}
+        return {"ok": False, "error": "Authorization required"}
 
-    if not await companies_crud.is_user_in_company(
-        db, current_user.id, payload.company_id
-    ):
-        return {"ok": False, "error": "User not part of the selected company"}
+    token = authorization.split(" ")[1]
+    user = await auth.get_current_user_from_token(token, db)
+
+    if not await companies_crud.is_user_in_company(db, user.id, payload.company_id):
+        return {"ok": False, "error": "Not part of this company"}
+
+    assoc = await db.execute(
+        select(CompanyUser).where(
+            CompanyUser.company_id == payload.company_id,
+            CompanyUser.user_id == user.id,
+        )
+    )
+    assoc = assoc.scalar_one()
+    role = "admin" if assoc.company_admin else "user"
 
     final_token = auth.create_access_token(
         {
-            "sub": current_user.email,
-            "uid": current_user.id,
+            "sub": user.email,
+            "uid": user.id,
+            "is_admin": user.is_super_admin,
             "company_id": payload.company_id,
+            "company_role": role,
         }
     )
+
     return {
         "ok": True,
         "access_token": final_token,
         "token_type": "bearer",
         "company_id": payload.company_id,
+        "company_role": role,
     }

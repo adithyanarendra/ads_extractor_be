@@ -28,54 +28,77 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def decode_token(token: str) -> str:
+def decode_token(token: str):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            return {"ok": False, "error": "Invalid token payload"}
-        return {"ok": True, "email": email}
+        return {"ok": True, "payload": payload}
     except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        return {"ok": False, "error": "Invalid token"}
 
 
 async def get_current_user(
     db: AsyncSession = Depends(get_db), token: str = Depends(oauth2_scheme)
 ) -> user_models.User:
-    payload = decode_token(token)
-    email = payload["email"]
+
+    decoded = decode_token(token)
+    if not decoded.get("ok"):
+        raise HTTPException(status_code=401, detail=decoded.get("error"))
+
+    payload = decoded["payload"]
+
+    email = payload.get("sub")
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
     user = await users_crud.get_user_by_email(db, email)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+
+    user.jwt_is_super_admin = payload.get("is_admin", False)
+    user.jwt_is_accountant = payload.get("is_accountant", False)
+    user.jwt_company_id = payload.get("company_id")
+    user.jwt_company_role = payload.get("company_role")
+    user.jwt_acting_user_id = payload.get("acting_user_id")
+
+    acting_id = payload.get("acting_user_id")
+    if acting_id:
+        user.effective_user_id = acting_id
+    else:
+        user.effective_user_id = user.id
+
     return user
 
 
-async def get_current_user_from_token(token: str, db: AsyncSession) -> user_models.User:
-    """
-    Used for cases like /signup where we might optionally have a token
-    (e.g., admin creating another user).
-    """
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email = payload.get("sub")
-        if email is None:
-            raise HTTPException(status_code=401, detail="Invalid token payload")
+async def get_current_user_from_token(token: str, db: AsyncSession):
+    decoded = decode_token(token)
+    if not decoded.get("ok"):
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-        result = await db.execute(
-            select(user_models.User).where(user_models.User.email == email)
-        )
-        user = result.scalar_one_or_none()
-        if not user:
-            raise HTTPException(status_code=401, detail="User not found")
-        return user
+    payload = decoded["payload"]
 
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    email = payload.get("sub")
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
+    result = await db.execute(
+        select(user_models.User).where(user_models.User.email == email)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    user.jwt_is_super_admin = payload.get("is_admin", False)
+    user.jwt_is_accountant = payload.get("is_accountant", False)
+    user.jwt_company_id = payload.get("company_id")
+    user.jwt_company_role = payload.get("company_role")
+    user.jwt_acting_user_id = payload.get("acting_user_id")
+
+    return user
 
 
 async def get_current_admin(
     current_user: user_models.User = Depends(get_current_user),
-) -> user_models.User:
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
+):
+    if not getattr(current_user, "jwt_is_super_admin", False):
+        raise HTTPException(status_code=403, detail="Super Admin only")
     return current_user

@@ -15,7 +15,7 @@ async def get_all_batches(
     db: AsyncSession = Depends(get_db),
     current_user: users_models.User = Depends(get_current_user),
 ):
-    res = await crud.list_batches(db, owner_id=current_user.id)
+    res = await crud.list_batches(db, owner_id=current_user.effective_user_id)
     return res
 
 
@@ -25,7 +25,9 @@ async def get_batch_invoice_ids(
     db: AsyncSession = Depends(get_db),
     current_user: users_models.User = Depends(get_current_user),
 ):
-    res = await crud.get_invoice_ids_for_batch(db, batch_id, owner_id=current_user.id)
+    res = await crud.get_invoice_ids_for_batch(
+        db, batch_id, owner_id=current_user.effective_user_id
+    )
     if not res.get("ok"):
         raise HTTPException(status_code=404, detail=res.get("message"))
     return res
@@ -40,7 +42,7 @@ async def add_batch(
     res = await crud.create_batch(
         db,
         payload.name,
-        owner_id=current_user.id,
+        owner_id=current_user.effective_user_id,
         invoice_ids=getattr(payload, "invoice_ids", None),
     )
     return res
@@ -56,7 +58,7 @@ async def add_child_batch(
     res = await crud.create_batch(
         db,
         payload.name,
-        owner_id=current_user.id,
+        owner_id=current_user.effective_user_id,
         invoice_ids=getattr(payload, "invoice_ids", None),
         parent_id=parent_id,
     )
@@ -71,7 +73,7 @@ async def add_invoices(
     current_user: users_models.User = Depends(get_current_user),
 ):
     res = await crud.add_invoices_to_batch(
-        db, batch_id, payload.invoice_ids, owner_id=current_user.id
+        db, batch_id, payload.invoice_ids, owner_id=current_user.effective_user_id
     )
     return res
 
@@ -82,7 +84,7 @@ async def toggle_lock(
     db: AsyncSession = Depends(get_db),
     current_user: users_models.User = Depends(get_current_user),
 ):
-    res = await crud.toggle_lock(db, batch_id, owner_id=current_user.id)
+    res = await crud.toggle_lock(db, batch_id, owner_id=current_user.effective_user_id)
     return res
 
 
@@ -92,7 +94,9 @@ async def delete_batch(
     db: AsyncSession = Depends(get_db),
     current_user: users_models.User = Depends(get_current_user),
 ):
-    res = await crud.delete_batch_if_unlocked(db, batch_id, owner_id=current_user.id)
+    res = await crud.delete_batch_if_unlocked(
+        db, batch_id, owner_id=current_user.effective_user_id
+    )
     return res
 
 
@@ -104,7 +108,7 @@ async def download_batch_zip(
 ):
     try:
         zip_buffer, batch_name = await crud.generate_batch_zip_with_csv(
-            db, batch_id, current_user.id
+            db, batch_id, current_user.effective_user_id
         )
         zip_size = zip_buffer.getbuffer().nbytes
         return StreamingResponse(
@@ -127,7 +131,7 @@ async def delete_invoice_from_batch(
     current_user: users_models.User = Depends(get_current_user),
 ):
     res = await crud.remove_invoice_from_batch(
-        db, batch_id, invoice_id, owner_id=current_user.id
+        db, batch_id, invoice_id, owner_id=current_user.effective_user_id
     )
     if not res.get("ok"):
         raise HTTPException(status_code=400, detail=res.get("message"))
@@ -141,7 +145,7 @@ async def reset_batch(
     current_user: users_models.User = Depends(get_current_user),
 ):
     res = await crud.clear_all_invoices_from_batch(
-        db, batch_id, owner_id=current_user.id
+        db, batch_id, owner_id=current_user.effective_user_id
     )
     if not res.get("ok"):
         raise HTTPException(status_code=400, detail=res.get("message"))

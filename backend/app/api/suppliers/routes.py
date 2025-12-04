@@ -8,15 +8,8 @@ from . import crud, schemas
 router = APIRouter(prefix="/suppliers", tags=["suppliers"])
 
 
-async def get_current_user(
-    token: str = Depends(auth.oauth2_scheme), db: AsyncSession = Depends(get_db)
-):
-    decoded = auth.decode_token(token)
-    email = decoded.get("email")
-    user = await users_crud.get_user_by_email(db, email)
-    if not user:
-        return None
-    return user
+async def get_current_user(current_user=Depends(auth.get_current_user)):
+    return current_user
 
 
 @router.get("/", response_model=schemas.SupplierListResponse)
@@ -28,7 +21,7 @@ async def list_suppliers(
     if not current_user:
         return {"ok": False, "error": "Unauthorized"}
 
-    suppliers = await crud.list_suppliers(db, current_user.id, search)
+    suppliers = await crud.list_suppliers(db, current_user.effective_user_id, search)
 
     return {
         "ok": True,
@@ -49,14 +42,17 @@ async def create_supplier(
 
     supplier = await crud.create_or_get_supplier(
         db,
-        current_user.id,
+        current_user.effective_user_id,
         getattr(current_user, "company_id", None),
         payload.name,
         payload.trn_vat_number,
     )
 
     supplier = await crud.update_supplier(
-        db, supplier.id, current_user.id, payload.dict(exclude_unset=True)
+        db,
+        supplier.id,
+        current_user.effective_user_id,
+        payload.dict(exclude_unset=True),
     )
 
     return {
@@ -77,16 +73,23 @@ async def update_supplier(
         return {"ok": False, "error": "Unauthorized"}
 
     updated_supplier = await crud.update_supplier(
-        db, supplier_id, current_user.id, payload.dict(exclude_unset=True)
+        db,
+        supplier_id,
+        current_user.effective_user_id,
+        payload.dict(exclude_unset=True),
     )
 
     if not updated_supplier:
         return {"ok": False, "error": "Supplier not found"}
 
+    supplier_out = schemas.SupplierOut.model_validate(
+        updated_supplier, from_attributes=True
+    )
+
     return {
         "ok": True,
         "message": "Supplier updated",
-        "data": updated_supplier,
+        "data": supplier_out,
     }
 
 
@@ -100,7 +103,10 @@ async def merge_suppliers(
         return {"ok": False, "error": "Unauthorized"}
 
     await crud.merge_suppliers(
-        db, current_user.id, payload.source_supplier_ids, payload.target_supplier_id
+        db,
+        current_user.effective_user_id,
+        payload.source_supplier_ids,
+        payload.target_supplier_id,
     )
 
     return {

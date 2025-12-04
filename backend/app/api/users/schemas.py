@@ -30,6 +30,7 @@ class ResetPasswordRequest(BaseModel):
 class UpdateUserRequest(BaseModel):
     user_id: Optional[int] = None
     name: Optional[str] = None
+    is_accountant: Optional[bool] = None
 
 
 class SelectCompanyPayload(BaseModel):

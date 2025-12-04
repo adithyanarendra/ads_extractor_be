@@ -28,9 +28,6 @@ class Invoice(Base):
 
     type = Column(String(20), nullable=True)
     batch_id = Column(Integer, ForeignKey("batches.id"), nullable=True)
-    batch = relationship("Batch", back_populates="invoices")
-    owner = relationship("User", back_populates="invoices")
-    company = relationship("Company", backref="invoices")
     file_hash = Column(String(64), nullable=False, index=True)
     is_duplicate = Column(Boolean, default=False, nullable=False)
 
@@ -45,3 +42,15 @@ class Invoice(Base):
     chart_of_account_id = Column(String, nullable=True)
     chart_of_account_name = Column(String, nullable=True)
     supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=True)
+
+    is_deleted = Column(Boolean, default=False, nullable=False)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    batch = relationship("Batch", back_populates="invoices")
+    owner = relationship(
+        "User",
+        back_populates="invoices",
+        foreign_keys=[owner_id],
+    )
+    company = relationship("Company", backref="invoices")

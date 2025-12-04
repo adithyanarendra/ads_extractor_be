@@ -1,4 +1,4 @@
-import select 
+import select
 import asyncio
 import os
 from uuid import uuid4
@@ -25,7 +25,6 @@ from . import crud as invoices_crud
 from ..batches import crud as batches_crud
 from ..retraining_model.data_processor import process_with_qwen
 from ..users import models as users_models
-from ..users import crud as users_crud
 from ...utils.ocr_parser import process_invoice
 from ...utils.r2 import (
     upload_to_r2_bytes,
@@ -34,7 +33,7 @@ from ...utils.r2 import (
     R2_BUCKET,
 )
 from .models import Invoice
-from .schemas import InvoiceDeleteRequest, InvoiceCoAUpdate # InvoiceCoAUpdate imported
+from .schemas import InvoiceDeleteRequest
 from ...utils.files_service import (
     upload_to_files_service_bytes,
     get_file_from_files_service,
@@ -42,32 +41,14 @@ from ...utils.files_service import (
 
 USE_CLOUD_STORAGE = True
 
-router = APIRouter(prefix="/invoice", tags=["invoices"]) # APIRouter initialized
+router = APIRouter(prefix="/invoice", tags=["invoices"])
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
-async def get_current_user(
-    token: str = Depends(auth.oauth2_scheme), db: AsyncSession = Depends(get_db)
-):
-    decoded = auth.decode_token(token)
-
-    if not decoded.get("ok"):
-        raise HTTPException(
-            status_code=401, detail=decoded.get("error", "Invalid token")
-        )
-
-    email = decoded.get("email")
-
-    if not email:
-        raise HTTPException(status_code=401, detail="Token missing email")
-
-    user = await users_crud.get_user_by_email(db, email)
-
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
+async def get_current_user(current_user=Depends(auth.get_current_user)):
+    return current_user
 
 
 def parse_range(range_str: str) -> Tuple[int, int] | dict:
@@ -94,10 +75,13 @@ async def get_invoice_analytics(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        data = await invoices_crud.get_invoice_analytics(db, current_user.id)
+        data = await invoices_crud.get_invoice_analytics(
+            db, current_user.effective_user_id
+        )
         return {"ok": True, "message": "Analytics fetched successfully", "data": data}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
 
 @router.post("/extract/{invoice_type}")
 async def extract_invoice(
@@ -113,7 +97,7 @@ async def extract_invoice(
     content = await file.read()
     placeholder_invoice = await invoices_crud.create_processing_invoice(
         db=db,
-        owner_id=current_user.id,
+        owner_id=current_user.effective_user_id,
         vendor_name=file.filename,
         invoice_type=invoice_type,
     )
@@ -156,7 +140,7 @@ async def request_review(
     db: AsyncSession = Depends(get_db),
 ):
     invoice = await invoices_crud.get_invoice_by_id_and_owner(
-        db, invoice_id, current_user.id
+        db, invoice_id, current_user.effective_user_id
     )
     if not invoice:
         raise HTTPException(
@@ -176,7 +160,7 @@ async def review_invoice(
     invoice = await invoices_crud.update_invoice_review(
         db,
         payload.invoice_id,
-        current_user.id,
+        current_user.effective_user_id,
         payload.reviewed,
         payload.corrected_fields,
     )
@@ -187,7 +171,7 @@ async def review_invoice(
 
     if invoice.reviewed and invoice.invoice_date:
         batch_id = await batches_crud.find_matching_batch_for_invoice(
-            db, current_user.id, invoice.invoice_date
+            db, current_user.effective_user_id, invoice.invoice_date
         )
         if batch_id:
             await db.execute(
@@ -220,7 +204,7 @@ async def get_all_invoices_paginated(
     if search or from_date or to_date:
         invoices = await invoices_crud.list_invoices_by_owner(
             db,
-            owner_id=current_user.id,
+            owner_id=current_user.effective_user_id,
             invoice_type=invoice_type,
             search=search,
             from_date=from_date,
@@ -240,14 +224,14 @@ async def get_all_invoices_paginated(
 
     invoices = await invoices_crud.list_invoices_by_owner(
         db,
-        owner_id=current_user.id,
+        owner_id=current_user.effective_user_id,
         invoice_type=invoice_type,
         limit=limit,
         offset=offset,
     )
 
     total_stmt = select(func.count(Invoice.id)).where(
-        Invoice.owner_id == current_user.id,
+        Invoice.owner_id == current_user.effective_user_id,
         Invoice.batch_id.is_(None),
         Invoice.type == invoice_type,
     )
@@ -262,7 +246,9 @@ async def to_be_reviewed(
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    invoices = await invoices_crud.list_invoices_to_review_by_owner(db, current_user.id)
+    invoices = await invoices_crud.list_invoices_to_review_by_owner(
+        db, current_user.effective_user_id
+    )
     return {"ok": True, "invoices": invoices}
 
 
@@ -274,7 +260,7 @@ async def edit_invoice(
     db: AsyncSession = Depends(get_db),
 ):
     invoice = await invoices_crud.edit_invoice(
-        db, invoice_id, current_user.id, payload.corrected_fields
+        db, invoice_id, current_user.effective_user_id, payload.corrected_fields
     )
     if not invoice:
         raise HTTPException(
@@ -290,7 +276,7 @@ async def get_invoice(
     db: AsyncSession = Depends(get_db),
 ):
     invoice = await invoices_crud.get_invoice_by_id_and_owner(
-        db, invoice_id, current_user.id
+        db, invoice_id, current_user.effective_user_id
     )
     if not invoice:
         raise HTTPException(
@@ -306,7 +292,7 @@ async def get_invoice_file(
     db: AsyncSession = Depends(get_db),
 ):
     invoice = await invoices_crud.get_invoice_by_id_and_owner(
-        db, invoice_id, current_user.id
+        db, invoice_id, current_user.effective_user_id
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -338,20 +324,62 @@ async def delete_invoice(
     if not invoice_ids:
         raise HTTPException(status_code=400, detail="No invoice IDs provided")
 
-    invoices = await invoices_crud.get_invoices_by_ids_and_owner(
-        db, invoice_ids, current_user.id
-    )
+    deleted_count = 0
+    file_paths_to_remove = []
 
-    if not invoices:
-        raise HTTPException(status_code=404, detail="No invoices found")
+    for inv_id in invoice_ids:
+        inv = None
+        acting_id = getattr(current_user, "jwt_acting_user_id", None)
 
-    file_paths = [inv.file_path for inv in invoices if inv.file_path]
+        if getattr(current_user, "jwt_is_accountant", False):
+            if acting_id:
+                inv = await invoices_crud.get_invoice_by_id_and_owner(
+                    db, inv_id, acting_id
+                )
+            else:
+                inv = await invoices_crud.get_invoice_by_id(db, inv_id)
+        elif getattr(current_user, "jwt_company_id", None) and getattr(
+            current_user, "jwt_company_role", None
+        ):
+            inv = await invoices_crud.get_invoice_by_id_and_company(
+                db, inv_id, current_user.jwt_company_id
+            )
+        else:
+            inv = await invoices_crud.get_invoice_by_id_and_owner(
+                db, inv_id, current_user.effective_user_id
+            )
 
-    deleted_count = await invoices_crud.delete_invoices(
-        db, invoice_ids, current_user.id
-    )
+        if not inv:
+            continue
 
-    for path in file_paths:
+        if getattr(current_user, "jwt_is_accountant", False):
+            success = await invoices_crud.soft_delete_invoice(
+                db, inv_id, deleted_by=current_user.effective_user_id
+            )
+            if success:
+                deleted_count += 1
+        else:
+            if inv.file_path:
+                file_paths_to_remove.append(inv.file_path)
+
+            if getattr(current_user, "jwt_is_super_admin", False):
+                await db.execute(update(Invoice).where(Invoice.id == inv_id).values())
+                await db.delete(inv)
+                await db.commit()
+                deleted_count += 1
+            elif getattr(current_user, "jwt_company_id", None) and getattr(
+                current_user, "jwt_company_role", None
+            ):
+                await db.delete(inv)
+                await db.commit()
+                deleted_count += 1
+            else:
+                await invoices_crud.delete_invoices(
+                    db, [inv_id], current_user.effective_user_id
+                )
+                deleted_count += 1
+
+    for path in file_paths_to_remove:
         try:
             parsed = urlparse(path)
             key = parsed.path.lstrip("/")
@@ -412,7 +440,7 @@ async def extract_invoice_local(
     parsed_fields["type"] = invoice_type
 
     invoice = await invoices_crud.create_invoice(
-        db, current_user.id, file_url, parsed_fields
+        db, current_user.effective_user_id, file_url, parsed_fields
     )
 
     return {
@@ -433,7 +461,8 @@ async def check_duplicate(
     file_hash = payload.file_hash.lower()
 
     stmt = select(Invoice).where(
-        Invoice.owner_id == current_user.id, Invoice.file_hash == file_hash
+        Invoice.owner_id == current_user.effective_user_id,
+        Invoice.file_hash == file_hash,
     )
     result = await db.execute(stmt)
     existing_invoice = result.scalars().first()
@@ -449,47 +478,53 @@ async def check_duplicate(
 
     return JSONResponse({"is_duplicate": False, "existing_invoice_id": None})
 
+
 @router.post("/push_to_qb/{invoice_id}")
 async def push_invoice(
     invoice_id: int,
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # 1. Get invoice from DB
-    invoice = await invoices_crud.get_invoice_by_id_and_owner(db, invoice_id, current_user.id)
+    invoice = await invoices_crud.get_invoice_by_id_and_owner(
+        db, invoice_id, current_user.effective_user_id
+    )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     if not invoice.verified:
         raise HTTPException(status_code=400, detail="Invoice not verified")
 
-    # 2. Prepare payload for QB
     invoice_payload = {
         "Line": [
             {
                 "Amount": float(invoice.total),
                 "DetailType": "SalesItemLineDetail",
                 "SalesItemLineDetail": {
-                    "ItemRef": {"value": "1", "name": "Services"}  # Replace with proper item mapping
-                }
+                    "ItemRef": {
+                        "value": "1",
+                        "name": "Services",
+                    }
+                },
             }
         ],
-        "CustomerRef": {"value": "1"},  # Replace with proper customer mapping
+        "CustomerRef": {"value": "1"},
         "TxnDate": str(invoice.invoice_date),
         "PrivateNote": f"Invoice {invoice.id} from website",
     }
 
-    # 3. Push to QuickBooks
     try:
         qb_response = push_invoice_to_qb(invoice_payload)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    # 4. Save QB invoice ID in DB
     invoice.qb_invoice_id = qb_response.get("Invoice", {}).get("Id")
     await db.commit()
 
-    return {"ok": True, "message": "Invoice pushed to QuickBooks", "qb_invoice_id": invoice.qb_invoice_id}
+    return {
+        "ok": True,
+        "message": "Invoice pushed to QuickBooks",
+        "qb_invoice_id": invoice.qb_invoice_id,
+    }
 
 
 @router.post("/retry_extraction/{invoice_id}")
@@ -499,7 +534,7 @@ async def retry_extraction(
     db: AsyncSession = Depends(get_db),
 ):
     invoice = await invoices_crud.get_invoice_by_id_and_owner(
-        db, invoice_id, current_user.id
+        db, invoice_id, current_user.effective_user_id
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")

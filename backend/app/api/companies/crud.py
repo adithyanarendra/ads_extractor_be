@@ -132,3 +132,12 @@ async def is_user_in_company(db: AsyncSession, user_id: int, company_id: int) ->
         )
     )
     return stmt.scalars().first() is not None
+
+
+async def company_has_admin(db: AsyncSession, company_id: int) -> bool:
+    stmt = await db.execute(
+        select(CompanyUser).where(
+            CompanyUser.company_id == company_id, CompanyUser.company_admin == True
+        )
+    )
+    return stmt.scalars().first() is not None

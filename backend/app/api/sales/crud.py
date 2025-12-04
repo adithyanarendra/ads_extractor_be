@@ -257,6 +257,10 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
 
     if not payload.line_items or len(payload.line_items) == 0:
         manual_total = payload.total or 0
+        vat_percentage = getattr(payload, "manual_vat_percentage", 0) or 0
+
+        vat_amount = (manual_total * vat_percentage) / 100 if vat_percentage else 0
+        subtotal = manual_total - vat_amount
 
         inv = models.SalesInvoice(
             owner_id=owner_id,
@@ -269,8 +273,8 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
             customer_trn=payload.customer_trn,
             invoice_number=payload.invoice_number,
             notes=payload.notes,
-            subtotal=manual_total,
-            total_vat=0,
+            subtotal=subtotal,
+            total_vat=vat_amount,
             discount=0,
             total=manual_total,
         )

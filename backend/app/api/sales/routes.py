@@ -16,7 +16,7 @@ async def get_products(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    products = await crud.list_products(db, current_user.id)
+    products = await crud.list_products(db, current_user.effective_user_id)
     return {"ok": True, "message": "Fetched", "data": products}
 
 
@@ -27,7 +27,7 @@ async def add_product(
     current_user=Depends(get_current_user),
 ):
     try:
-        result = await crud.add_product(db, current_user.id, payload)
+        result = await crud.add_product(db, current_user.effective_user_id, payload)
         return {"ok": True, "message": "Product(s) created", "data": result}
     except Exception as e:
         return {"ok": False, "message": "Failed", "error": str(e)}
@@ -40,7 +40,7 @@ async def edit_product(
     db=Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    p = await crud.edit_product(db, current_user.id, pid, payload)
+    p = await crud.edit_product(db, current_user.effective_user_id, pid, payload)
     if not p:
         return {"ok": False, "message": "Not found"}
     return {"ok": True, "message": "Updated", "data": p}
@@ -50,7 +50,7 @@ async def edit_product(
 async def delete_product(
     pid: int, db=Depends(get_db), current_user=Depends(get_current_user)
 ):
-    ok = await crud.delete_product(db, current_user.id, pid)
+    ok = await crud.delete_product(db, current_user.effective_user_id, pid)
     return {"ok": ok, "message": "Deleted" if ok else "Not found"}
 
 
@@ -59,7 +59,7 @@ async def get_customers(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    customers = await crud.list_customers(db, current_user.id)
+    customers = await crud.list_customers(db, current_user.effective_user_id)
     return {"ok": True, "message": "Fetched", "data": customers}
 
 
@@ -70,7 +70,7 @@ async def add_customer(
     current_user=Depends(get_current_user),
 ):
     try:
-        result = await crud.add_customer(db, current_user.id, payload)
+        result = await crud.add_customer(db, current_user.effective_user_id, payload)
         return {"ok": True, "message": "Customer(s) created", "data": result}
     except Exception as e:
         return {"ok": False, "message": "Failed", "error": str(e)}
@@ -83,7 +83,7 @@ async def edit_customer(
     db=Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    c = await crud.edit_customer(db, current_user.id, cid, payload)
+    c = await crud.edit_customer(db, current_user.effective_user_id, cid, payload)
     if not c:
         return {"ok": False, "message": "Not found"}
     return {"ok": True, "message": "Updated", "data": c}
@@ -93,7 +93,7 @@ async def edit_customer(
 async def delete_customer(
     cid: int, db=Depends(get_db), current_user=Depends(get_current_user)
 ):
-    ok = await crud.delete_customer(db, current_user.id, cid)
+    ok = await crud.delete_customer(db, current_user.effective_user_id, cid)
     return {"ok": ok, "message": "Deleted" if ok else "Not found"}
 
 
@@ -103,7 +103,7 @@ async def create_sales_invoice(
     db=Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    inv = await crud.create_invoice(db, current_user.id, payload)
+    inv = await crud.create_invoice(db, current_user.effective_user_id, payload)
     if not inv:
         return {"ok": False, "message": "Missing seller company details"}
     return {"ok": True, "message": "Invoice created", "data": {"invoice_id": inv.id}}
@@ -113,7 +113,7 @@ async def create_sales_invoice(
 async def list_sales_invoices(
     db=Depends(get_db), current_user=Depends(get_current_user)
 ):
-    invoices = await crud.list_invoices(db, current_user.id)
+    invoices = await crud.list_invoices(db, current_user.effective_user_id)
     return {"ok": True, "message": "Fetched", "data": invoices}
 
 
@@ -121,7 +121,7 @@ async def list_sales_invoices(
 async def delete_sales_invoice(
     invoice_id: int, db=Depends(get_db), current_user=Depends(get_current_user)
 ):
-    ok = await crud.delete_invoice(db, current_user.id, invoice_id)
+    ok = await crud.delete_invoice(db, current_user.effective_user_id, invoice_id)
     return {"ok": ok, "message": "Deleted" if ok else "Not found"}
 
 
@@ -130,7 +130,7 @@ async def get_inventory(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    items = await crud.list_inventory(db, current_user.id)
+    items = await crud.list_inventory(db, current_user.effective_user_id)
     return {"ok": True, "message": "Fetched", "data": items}
 
 
@@ -145,7 +145,9 @@ async def add_inventory_items(
     For a single item, send `[item]` just like items/customers.
     """
     try:
-        result = await crud.add_inventory_items(db, current_user.id, payload)
+        result = await crud.add_inventory_items(
+            db, current_user.effective_user_id, payload
+        )
         return {
             "ok": True,
             "message": "Inventory item(s) added/updated",
@@ -162,7 +164,9 @@ async def update_inventory_item(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    inv = await crud.edit_inventory_item(db, current_user.id, iid, payload)
+    inv = await crud.edit_inventory_item(
+        db, current_user.effective_user_id, iid, payload
+    )
     if not inv:
         return {"ok": False, "message": "Not found"}
     return {"ok": True, "message": "Updated", "data": inv}
@@ -175,7 +179,7 @@ async def adjust_inventory(
     current_user=Depends(get_current_user),
 ):
     updated = await crud.adjust_inventory_quantity(
-        db, current_user.id, payload.product_id, payload.delta
+        db, current_user.effective_user_id, payload.product_id, payload.delta
     )
 
     if not updated:
@@ -192,14 +196,9 @@ async def download_invoice(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """
-    Download invoice in 3 types:
-    - simple
-    - detailed
-    - thermal (with optional width)
-    """
-
-    invoice = await crud.get_invoice_with_items(db, current_user.id, invoice_id)
+    invoice = await crud.get_invoice_with_items(
+        db, current_user.effective_user_id, invoice_id
+    )
     if not invoice:
         return {"ok": False, "message": "Invoice not found"}
 

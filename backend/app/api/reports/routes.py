@@ -21,7 +21,7 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 async def vat_summary(
     db: AsyncSession = Depends(get_db), current_user: int = Depends(get_current_user)
 ):
-    result = await get_vat_summary(db, current_user.id)
+    result = await get_vat_summary(db, current_user.effective_user_id)
 
     if not result["ok"]:
         return {**result, "http_status": status.HTTP_400_BAD_REQUEST}
@@ -35,7 +35,9 @@ async def vat_summary_by_batch(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    result = await get_vat_summary_by_batch(db, current_user.id, batch_id)
+    result = await get_vat_summary_by_batch(
+        db, current_user.effective_user_id, batch_id
+    )
     return result
 
 
@@ -43,7 +45,7 @@ async def vat_summary_by_batch(
 async def list_reports(
     db: AsyncSession = Depends(get_db), current_user=Depends(get_current_user)
 ):
-    reports = await get_all_reports(db, current_user.id)
+    reports = await get_all_reports(db, current_user.effective_user_id)
 
     return {
         "ok": True,
@@ -70,13 +72,13 @@ async def upload_report(
 ):
     try:
         content = await file.read()
-        filename = f"{current_user.id}/{type}/{file.filename}"
+        filename = f"{current_user.effective_user_id}/{type}/{file.filename}"
 
         file_url = upload_to_r2_bytes(content, filename)
 
         result = await create_report(
             db,
-            user_id=current_user.id,
+            user_id=current_user.effective_user_id,
             report_name=file.filename,
             type=type,
             file_path=file_url,
@@ -98,7 +100,7 @@ async def view_report(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    report = await get_report(db, report_id, current_user.id)
+    report = await get_report(db, report_id, current_user.effective_user_id)
 
     if not report:
         return {

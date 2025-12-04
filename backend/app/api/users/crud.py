@@ -173,3 +173,28 @@ async def get_user_companies(db: AsyncSession, user_id: int):
     )
     result = await db.execute(stmt)
     return result.scalars().all()
+
+
+async def set_user_accountant(
+    db: AsyncSession,
+    user_id: int,
+    is_accountant: bool,
+    updated_by: Optional[int] = None,
+) -> Optional[users_models.User]:
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        return None
+
+    user.is_accountant = bool(is_accountant)
+    now = datetime.datetime.utcnow()
+
+    if updated_by:
+        user.updated_by = updated_by
+        user.last_updated_by = updated_by
+
+    user.updated_at = now
+    user.last_updated_at = now
+
+    await db.commit()
+    await db.refresh(user)
+    return user
