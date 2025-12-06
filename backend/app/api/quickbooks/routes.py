@@ -1,10 +1,12 @@
 import os
 import time
 import asyncio
+import traceback
+import json
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime
 import httpx
-from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi import APIRouter, Request, HTTPException, Depends, Header
 from fastapi.responses import RedirectResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from intuitlib.enums import Scopes
@@ -21,6 +23,10 @@ from app.api.quickbooks.client import (
 )
 from app.core.database import async_session_maker
 from app.api.batches import crud as batches_crud
+from app.core.auth import decode_token
+from app.api.users.crud import mark_qb_connected, mark_qb_disconnected
+from app.core.auth import get_current_user
+from ..users import models as users_models
 
 router = APIRouter(prefix="/quickbooks", tags=["QuickBooks"])
 
@@ -144,6 +150,12 @@ async def quickbooks_callback(request: Request, db: AsyncSession = Depends(get_d
     if not decoded.get("ok"):
         return RedirectResponse(url=f"{redirect_url}&error=invalid_token")
 
+    payload = decoded["payload"]
+    
+    user_id = payload.get("uid") 
+    if not user_id:
+        return RedirectResponse(url=f"{redirect_url}&error=no_user_id")
+
     await asyncio.to_thread(auth_client.get_bearer_token, code, realm_id)
 
     await save_qb_tokens(
@@ -153,6 +165,8 @@ async def quickbooks_callback(request: Request, db: AsyncSession = Depends(get_d
         realm_id=realm_id,
         expires_in=auth_client.expires_in,
     )
+
+    await mark_qb_connected(db, user_id)
 
     return RedirectResponse(url=f"{redirect_url}&qb_connected=true")
 
@@ -202,14 +216,19 @@ async def fetch_chart_of_accounts(db: AsyncSession = Depends(get_db)):
     return {"accounts": normalized}
 
 @router.delete("/disconnect")
-async def disconnect_quickbooks(db: AsyncSession = Depends(get_db)):
-    deleted = await delete_qb_tokens(db)
+async def disconnect_quickbooks(
+    db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(get_current_user),
+):
+
+    await mark_qb_disconnected(db, current_user.id)
+    await delete_qb_tokens(db)
+
     _COA_CACHE["ts"] = 0
     _COA_CACHE["accounts"] = []
-    return {"message": "QuickBooks disconnected" if deleted else "No QuickBooks connection found"}
 
-import traceback
-import json
+    return {"message": "QuickBooks disconnected"}
+
 
 async def push_single_invoice_core(
     db: AsyncSession, 
@@ -343,11 +362,6 @@ async def push_bill_to_quickbooks(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
-import asyncio
-from datetime import datetime
-from ..users import models as users_models
-from ..invoices.routes import get_current_user
 
 @router.post("/push-batch/{batch_id}")
 async def push_batch_to_quickbooks(

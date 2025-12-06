@@ -31,7 +31,6 @@ from app.api.batches.routes import router as batches_router
 from .api.user_docs.routes import router as user_docs_router
 from .api.reports.routes import router as reports_router
 from app.api.quickbooks import routes as quickbooks_routes
-from app.api.integrations.routes import router as integrations_router
 from .api.statements.routes import router as statements_router
 from .api.accounting.routes import router as accounting_router
 from .api.sales.routes import router as sales_invoices_router
@@ -67,7 +66,6 @@ app.include_router(batches_router)
 app.include_router(user_docs_router)
 app.include_router(reports_router)
 app.include_router(quickbooks_routes.router)
-app.include_router(integrations_router)
 app.include_router(statements_router)
 app.include_router(accounting_router)
 app.include_router(sales_invoices_router)

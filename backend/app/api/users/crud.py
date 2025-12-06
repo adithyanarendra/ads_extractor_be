@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from typing import Optional, Dict, Any
 from ..users import models as users_models
 from ..companies import models as companies_models
@@ -198,3 +198,62 @@ async def set_user_accountant(
     await db.commit()
     await db.refresh(user)
     return user
+
+
+async def set_connection_status(
+    db: AsyncSession,
+    user_id: int,
+    field: str,
+    value: bool
+) -> bool:
+    # Validate allowed fields for safety
+    allowed_fields = {"is_qb_connected", "is_zb_connected"}
+    if field not in allowed_fields:
+        raise ValueError(f"Invalid connection field: {field}")
+
+    stmt = (
+        update(users_models.User)
+        .where(users_models.User.id == user_id)
+        .values({field: value})
+        .execution_options(synchronize_session="fetch")
+    )
+
+    await db.execute(stmt)
+    await db.commit()
+    return True
+
+async def get_connection_status(
+    db: AsyncSession,
+    user_id: int,
+    field: str
+) -> bool:
+    allowed_fields = {"is_qb_connected", "is_zb_connected"}
+    if field not in allowed_fields:
+        raise ValueError(f"Invalid connection field: {field}")
+
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        return False
+    
+    return getattr(user, field)
+
+# ---- QuickBooks ----
+async def mark_qb_connected(db: AsyncSession, user_id: int):
+    return await set_connection_status(db, user_id, "is_qb_connected", True)
+
+async def mark_qb_disconnected(db: AsyncSession, user_id: int):
+    return await set_connection_status(db, user_id, "is_qb_connected", False)
+
+async def get_qb_connection_status(db: AsyncSession, user_id: int):
+    return await get_connection_status(db, user_id, "is_qb_connected")
+
+
+# ---- Zoho Books ----
+async def mark_zb_connected(db: AsyncSession, user_id: int):
+    return await set_connection_status(db, user_id, "is_zb_connected", True)
+
+async def mark_zb_disconnected(db: AsyncSession, user_id: int):
+    return await set_connection_status(db, user_id, "is_zb_connected", False)
+
+async def get_zb_connection_status(db: AsyncSession, user_id: int):
+    return await get_connection_status(db, user_id, "is_zb_connected")

@@ -10,6 +10,10 @@ from app.api.accounting import crud
 from app.api.accounting.models import AccountingConnection, ConnStatusEnum
 from .zoho_client import ZohoClient
 from .oauth_utils import ZohoOAuth
+from app.core import auth
+from app.api.users.crud import mark_zb_connected,mark_zb_disconnected
+from app.core.auth import get_current_user
+from app.api.users.models import User
 
 router = APIRouter(prefix="/api/accounting", tags=["accounting"])
 
@@ -43,9 +47,8 @@ async def ensure_valid_token(db: AsyncSession, conn: AccountingConnection):
     """Refresh access token if expired."""
     now = datetime.now(timezone.utc)
     if conn.expires_at and conn.expires_at > now:
-        return conn  # Token still valid
+        return conn  
 
-    # Token expired → refresh
     token_response = oauth.refresh_access_token(
         refresh_token=conn.refresh_token,
         dc_domain=conn.dc_domain
@@ -75,23 +78,41 @@ async def ensure_valid_token(db: AsyncSession, conn: AccountingConnection):
 @router.get("/zoho/connect")
 async def connect_zoho(state: str | None = None):
     """Redirect user to Zoho OAuth authorization page."""
-    state_val = state or "zoho_auth"
-    auth_url = oauth.get_auth_url(state=state_val)
-    print(f"[DEBUG] Redirecting to Zoho auth: {auth_url}")
+    auth_url = oauth.get_auth_url(state=state)
     return RedirectResponse(url=auth_url)
-
 
 # ------------------------------------------------------------
 # 2. CALLBACK (OAuth Token Exchange)
 # ------------------------------------------------------------
+
 @router.get("/zoho/callback")
 async def zoho_callback(
     request: Request,
     code: str = None,
     db: AsyncSession = Depends(get_db)
 ):
-    """Zoho OAuth callback - exchange code for tokens and redirect to frontend"""
     try:
+        token = request.query_params.get("state")
+        if not token:
+            return RedirectResponse(
+                url=f"{FRONTEND_URL}/?zoho_error=Missing+user+token",
+                status_code=302,
+            )
+
+        decoded = auth.decode_token(token)
+        if not decoded.get("ok"):
+            return RedirectResponse(
+                url=f"{FRONTEND_URL}/?zoho_error=Invalid+token",
+                status_code=302,
+            )
+
+        user_id = decoded["payload"].get("uid")
+        if not user_id:
+            return RedirectResponse(
+                url=f"{FRONTEND_URL}/?zoho_error=Invalid+user",
+                status_code=302,
+            )
+
         if not code:
             return RedirectResponse(
                 url=f"{FRONTEND_URL}/?zoho_error=Missing+authorization+code",
@@ -116,14 +137,13 @@ async def zoho_callback(
         expires_in = token_response.get("expires_in", 3600)
 
         if not access_token or not refresh_token:
-            error_msg = token_response.get('error', 'Unknown error')
+            error_msg = token_response.get("error", "Unknown error")
             return RedirectResponse(
                 url=f"{FRONTEND_URL}/?zoho_error={quote_plus(error_msg)}",
                 status_code=302
             )
 
         org_id = 1
-
         existing = await crud.get_connection(db, org_id)
 
         if existing:
@@ -141,7 +161,8 @@ async def zoho_callback(
                 expires_in=expires_in,
             )
 
-        # ✅ REDIRECT TO FRONTEND WITH SUCCESS
+        await mark_zb_connected(db, user_id)
+
         return RedirectResponse(
             url=f"{FRONTEND_URL}/?zoho_connected=true&connection_id={conn.id}",
             status_code=302
@@ -247,13 +268,21 @@ async def zoho_status(db: AsyncSession = Depends(get_db)):
 # 7. DISCONNECT
 # ------------------------------------------------------------
 @router.post("/zoho/disconnect")
-async def zoho_disconnect(db: AsyncSession = Depends(get_db)):
+async def zoho_disconnect(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     org_id = 1
     conn = await crud.get_connection(db, org_id)
 
     if not conn:
-        raise HTTPException(400, "Not connected")
+        raise HTTPException(status_code=400, detail="Not connected")
 
     await crud.delete_connection(db, conn.id)
 
-    return {"success": True, "message": "Disconnected from Zoho"}
+    await mark_zb_disconnected(db, current_user.id)
+
+    return {
+        "success": True,
+        "message": "Disconnected from Zoho Books"
+    }

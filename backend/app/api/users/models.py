@@ -25,6 +25,11 @@ class User(Base):
     role = Column(String, nullable=True)
 
     is_approved = Column(Boolean, default=False)
+
+    is_qb_connected = Column(Boolean, default=False, nullable=False)
+    is_zb_connected = Column(Boolean, default=False, nullable=False)
+
+
     signup_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Audit fields
