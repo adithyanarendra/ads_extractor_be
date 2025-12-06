@@ -51,6 +51,15 @@ class InvoiceBase(BaseModel):
     def _norm_invoice_date(cls, v):
         return _normalize_to_ddmmyyyy(v)
 
+    @validator("tax_note_amount", pre=True)
+    def _norm_tax_note_amount(cls, v):
+        if v in ("", None):
+            return None
+        try:
+            return float(v)
+        except Exception:
+            return v
+
 
 class InvoiceOut(InvoiceBase):
     id: int

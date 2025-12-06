@@ -6,6 +6,9 @@ from ..invoices.routes import get_current_user
 from app.core.database import get_db
 from .schemas import BatchCreate, AddInvoicesPayload
 from . import crud
+from app.api.accounting import crud as accounting_crud
+from app.api.accounting.routes import ensure_valid_token
+from app.api.accounting.zoho_client import ZohoClient
 
 router = APIRouter(prefix="/batches", tags=["Batches"])
 
@@ -31,6 +34,24 @@ async def get_batch_invoice_ids(
     if not res.get("ok"):
         raise HTTPException(status_code=404, detail=res.get("message"))
     return res
+
+
+@router.get("/{batch_id}/invoices")
+async def get_batch_invoices(
+    batch_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(get_current_user),
+):
+    batch = await crud.get_batch_with_invoices(
+        db, batch_id, owner_id=current_user.effective_user_id
+    )
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    invoices = await crud.get_invoices_with_coas_for_batch(
+        db, batch_id, owner_id=current_user.effective_user_id
+    )
+    return {"ok": True, "batch_id": batch_id, "invoices": invoices}
 
 
 @router.post("/add")
@@ -150,3 +171,66 @@ async def reset_batch(
     if not res.get("ok"):
         raise HTTPException(status_code=400, detail=res.get("message"))
     return res
+
+
+@router.post("/{batch_id}/push-zoho")
+async def push_batch_to_zoho(
+    batch_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(get_current_user),
+):
+    batch = await crud.get_batch_with_invoices(
+        db, batch_id, owner_id=current_user.effective_user_id
+    )
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    invoices = await crud.get_invoices_with_coas_for_batch(
+        db, batch_id, owner_id=current_user.effective_user_id
+    )
+    if not invoices:
+        raise HTTPException(status_code=400, detail="Batch has no invoices")
+
+    missing_coa = [inv for inv in invoices if not inv.get("chart_of_account_id")]
+    if missing_coa:
+        return {
+            "success": 0,
+            "failed": len(missing_coa),
+            "error": f"{len(missing_coa)} invoices missing Chart of Account selection",
+        }
+
+    org_id = 1
+    conn = await accounting_crud.get_connection(db, org_id)
+    if not conn:
+        raise HTTPException(status_code=401, detail="Not connected to Zoho Books")
+
+    conn = await ensure_valid_token(db, conn)
+    if not conn:
+        raise HTTPException(status_code=401, detail="Zoho token refresh failed")
+
+    client = ZohoClient(conn.access_token, conn.external_org_id)
+    summary = {"success": 0, "failed": 0, "errors": []}
+
+    for inv in invoices:
+        invoice_type = "sales" if inv.get("type") == "sales" else "expense"
+        payload = {
+            "invoices": [inv],
+            "account_id": inv["chart_of_account_id"],
+            "invoice_type": invoice_type,
+        }
+        result = client.push_multiple_invoices(payload)
+
+        if isinstance(result, dict) and result.get("success", 0) >= 1:
+            summary["success"] += 1
+        else:
+            summary["failed"] += 1
+            msg = ""
+            if isinstance(result, dict):
+                msg = result.get("message") or str(result)
+            else:
+                msg = str(result)
+            summary["errors"].append(
+                f"Invoice {inv.get('invoice_number') or inv.get('id')}: {msg}"
+            )
+
+    return summary

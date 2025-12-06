@@ -11,6 +11,33 @@ from .templates import renderer
 router = APIRouter(prefix="/sales", tags=["sales"])
 
 
+@router.get("/invoices/next-number")
+async def get_next_invoice_number_api(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    number = await crud.get_next_invoice_number(db, current_user.effective_user_id)
+    return {"ok": True, "data": number}
+
+
+@router.get("/terms")
+async def get_terms_api(
+    db: AsyncSession = Depends(get_db), current_user=Depends(get_current_user)
+):
+    terms = await crud.get_terms(db, current_user.effective_user_id)
+    return {"ok": True, "data": terms.terms if terms else ""}
+
+
+@router.post("/terms")
+async def update_terms_api(
+    payload: schemas.SalesTermsUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    obj = await crud.update_terms(db, current_user.effective_user_id, payload)
+    return {"ok": True, "message": "Updated", "data": obj.terms}
+
+
 @router.get("/items")
 async def get_products(
     db: AsyncSession = Depends(get_db),
@@ -205,7 +232,7 @@ async def download_invoice(
     invoice_type = invoice_type.lower()
 
     if invoice_type == "simple":
-        pdf_bytes = await renderer.render_simple_invoice_pdf(invoice)
+        pdf_bytes = await renderer.render_simple_invoice_pdf(invoice, db)
 
     elif invoice_type == "detailed":
         pdf_bytes = await renderer.render_detailed_invoice_pdf(invoice)

@@ -19,7 +19,7 @@ class ZohoOAuth:
     # ------------------------------------------------------------
     # STEP 1 — Generate Auth URL
     # ------------------------------------------------------------
-    def get_auth_url(self):
+    def get_auth_url(self, state: str = "random_state_string"):
         params = {
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
@@ -27,7 +27,7 @@ class ZohoOAuth:
             "scope": "ZohoBooks.fullaccess.all",
             "access_type": "offline",
             "prompt": "consent",
-            "state": "random_state_string"
+            "state": state,
         }
 
         query = "&".join([f"{k}={v}" for k, v in params.items()])

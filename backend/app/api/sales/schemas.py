@@ -89,3 +89,7 @@ class InventoryAdjust(BaseModel):
 
 class InvoiceDownloadOptions(BaseModel):
     thermal_width_mm: Optional[int] = 58
+
+
+class SalesTermsUpdate(BaseModel):
+    terms: Optional[str] = ""

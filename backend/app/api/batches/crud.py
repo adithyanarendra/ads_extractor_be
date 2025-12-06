@@ -13,6 +13,7 @@ from . import models
 from ...utils.r2 import get_file_from_r2
 from ..invoices.models import Invoice
 from ..invoices.crud import get_invoice_by_id_and_owner
+from .models import Batch
 
 
 def _ok(message: str, data=None):
@@ -23,67 +24,36 @@ def _err(message: str, error: str):
     return {"ok": False, "message": message, "error": error}
 
 
-MONTH_MAP = {m.lower(): i for i, m in enumerate(month_abbr) if m}
-
-
 async def list_batches(db: AsyncSession, owner_id: int) -> Dict[str, Any]:
+    """List all batches with invoice counts"""
     try:
         result = await db.execute(
             select(models.Batch)
             .options(
-                selectinload(models.Batch.children),
+                selectinload(models.Batch.invoices),
+                selectinload(models.Batch.children).selectinload(models.Batch.invoices),
             )
             .where(models.Batch.owner_id == owner_id)
             .order_by(models.Batch.created_at.desc())
         )
-        batches = result.scalars().unique().all()
+        rows = result.scalars().unique().all()
 
         data = []
-
-        for b in batches:
-            invoice_ids = set()
-
-            direct_ids = (
-                (
-                    await db.execute(
-                        select(Invoice.id).where(
-                            Invoice.batch_id == b.id, Invoice.owner_id == owner_id
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-
-            invoice_ids.update(direct_ids)
-
+        for b in rows:
+            all_invoices = list(b.invoices)
             for child in b.children or []:
-                child_ids = (
-                    (
-                        await db.execute(
-                            select(Invoice.id).where(
-                                Invoice.batch_id == child.id,
-                                Invoice.owner_id == owner_id,
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                invoice_ids.update(child_ids)
-
+                all_invoices.extend(child.invoices or [])
             data.append(
                 {
                     "id": b.id,
                     "name": b.name,
-                    "invoice_count": len(invoice_ids),
-                    "invoice_ids": list(invoice_ids),
+                    "invoice_count": len(all_invoices),
+                    "invoice_ids": [inv.id for inv in all_invoices],
                     "parent_id": b.parent_id,
                 }
             )
 
         return _ok("Fetched batches.", data)
-
     except Exception as e:
         return _err("Failed to fetch batches.", str(e))
 
@@ -261,10 +231,12 @@ async def delete_batch_if_unlocked(
 async def add_invoices_to_batch(
     db: AsyncSession, batch_id: int, invoice_ids: List[int], owner_id: int
 ) -> dict:
+    """Add veridied only invoices to an existing batch owned by the user"""
     try:
         if not invoice_ids:
             return _err("No invoices provided to add.", "empty_array")
 
+        # Fetch the batch and ensure it belongs to the owner
         batch = (
             await db.execute(
                 select(models.Batch)
@@ -300,6 +272,31 @@ async def add_invoices_to_batch(
             .where(Invoice.id.in_(verified_ids))
             .values(batch_id=batch_id)
         )
+
+        if batch.parent_id:
+            parent_id = batch.parent_id
+
+            # Fetch parent batch
+            parent_batch = (
+                await db.execute(
+                    select(models.Batch)
+                    .where(models.Batch.id == parent_id)
+                    .options(selectinload(models.Batch.invoices))
+                )
+            ).scalar_one_or_none()
+
+            if parent_batch:
+                existing_parent_invoice_ids = {inv.id for inv in parent_batch.invoices}
+                new_parent_invoice_ids = set(verified_ids) - existing_parent_invoice_ids
+
+                if new_parent_invoice_ids:
+                    parent_batch.invoices.extend(
+                        [
+                            inv
+                            for inv in verified_invoices
+                            if inv.id in new_parent_invoice_ids
+                        ]
+                    )
 
         batch.updated_at = datetime.now(timezone.utc)
         await db.commit()
@@ -434,6 +431,55 @@ async def get_invoice_ids_for_batch(
 
     except Exception as e:
         return _err("Failed to fetch invoice IDs.", str(e))
+
+
+async def get_batch_with_invoices(
+    db: AsyncSession, batch_id: int, owner_id: int
+) -> Optional[Batch]:
+    """Fetch a batch with invoices (including children) for the owner."""
+    result = await db.execute(
+        select(models.Batch)
+        .options(
+            selectinload(models.Batch.invoices),
+            selectinload(models.Batch.children).selectinload(models.Batch.invoices),
+        )
+        .where(models.Batch.id == batch_id, models.Batch.owner_id == owner_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_invoices_with_coas_for_batch(
+    db: AsyncSession, batch_id: int, owner_id: int
+) -> list[dict]:
+    """Return all invoices in a batch (including children) with their COA selections."""
+    batch = await get_batch_with_invoices(db, batch_id, owner_id)
+    if not batch:
+        return []
+
+    invoices = list(batch.invoices or [])
+    for child in batch.children or []:
+        invoices.extend(child.invoices or [])
+
+    data = []
+    for inv in invoices:
+        data.append(
+            {
+                "id": inv.id,
+                "invoice_number": inv.invoice_number,
+                "vendor_name": inv.vendor_name,
+                "bill_date": getattr(inv, "invoice_date", None),
+                "description": inv.description or inv.vendor_name,
+                "amount": float(inv.total or inv.before_tax_amount or 0),
+                "chart_of_account_id": inv.chart_of_account_id,
+                "chart_of_account_name": inv.chart_of_account_name,
+                "type": getattr(inv, "type", None),
+            }
+        )
+
+    return data
+
+
+MONTH_MAP = {m.lower(): i for i, m in enumerate(month_abbr) if m}
 
 
 def parse_batch_range(batch_name: str):
@@ -626,3 +672,47 @@ async def clear_all_invoices_from_batch(db: AsyncSession, batch_id: int, owner_i
     except Exception as e:
         await db.rollback()
         return _err("Failed to reset batch.", str(e))
+
+async def get_invoices_for_qb_batch_status(
+    db: AsyncSession, batch_id: int, owner_id: int
+):
+    """
+    Fetches key invoice details (including COA) for the QuickBooks pre-push dialog.
+    It specifically filters out invoices that are already published.
+    """
+    batch_with_invoices = await db.execute(
+        select(models.Batch)
+        .options(
+            selectinload(models.Batch.invoices),
+            selectinload(models.Batch.children).selectinload(models.Batch.invoices),
+        )
+        .where(models.Batch.id == batch_id, models.Batch.owner_id == owner_id)
+    )
+    batch = batch_with_invoices.scalar_one_or_none()
+
+    if not batch:
+        return []
+
+    all_invoices = []
+    
+    for inv in batch.invoices:
+        if not inv.is_published:
+            all_invoices.append(inv)
+            
+    for child in batch.children or []:
+        for inv in child.invoices:
+            if not inv.is_published:
+                all_invoices.append(inv)
+
+    data = []
+    for inv in all_invoices:
+        data.append(
+            {
+                "id": inv.id,
+                "invoice_number": inv.invoice_number,
+                "vendor_name": inv.vendor_name,
+                "chart_of_account_id": inv.chart_of_account_id,
+                "chart_of_account_name": inv.chart_of_account_name,
+            }
+        )
+    return data

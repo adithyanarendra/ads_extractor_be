@@ -37,6 +37,7 @@ class Invoice(Base):
     has_tax_note = Column(Boolean, default=False)
     tax_note_type = Column(String(20), nullable=True)
     tax_note_amount = Column(String, nullable=True)
+    is_published = Column(Boolean, default=False, nullable=False)
 
     qb_id = Column(Integer, nullable=True)
     chart_of_account_id = Column(String, nullable=True)

@@ -73,9 +73,10 @@ async def ensure_valid_token(db: AsyncSession, conn: AccountingConnection):
 # 1. CONNECT URL
 # ------------------------------------------------------------
 @router.get("/zoho/connect")
-async def connect_zoho():
+async def connect_zoho(state: str | None = None):
     """Redirect user to Zoho OAuth authorization page."""
-    auth_url = oauth.get_auth_url()
+    state_val = state or "zoho_auth"
+    auth_url = oauth.get_auth_url(state=state_val)
     print(f"[DEBUG] Redirecting to Zoho auth: {auth_url}")
     return RedirectResponse(url=auth_url)
 
@@ -93,14 +94,14 @@ async def zoho_callback(
     try:
         if not code:
             return RedirectResponse(
-                url=f"{FRONTEND_URL}/?error=Missing+authorization+code",
+                url=f"{FRONTEND_URL}/?zoho_error=Missing+authorization+code",
                 status_code=302
             )
 
         dc_domain = request.query_params.get("accounts-server")
         if not dc_domain:
             return RedirectResponse(
-                url=f"{FRONTEND_URL}/?error=Missing+accounts-server",
+                url=f"{FRONTEND_URL}/?zoho_error=Missing+accounts-server",
                 status_code=302
             )
 
@@ -117,7 +118,7 @@ async def zoho_callback(
         if not access_token or not refresh_token:
             error_msg = token_response.get('error', 'Unknown error')
             return RedirectResponse(
-                url=f"{FRONTEND_URL}/?error={quote_plus(error_msg)}",
+                url=f"{FRONTEND_URL}/?zoho_error={quote_plus(error_msg)}",
                 status_code=302
             )
 
@@ -142,13 +143,13 @@ async def zoho_callback(
 
         # ✅ REDIRECT TO FRONTEND WITH SUCCESS
         return RedirectResponse(
-            url=f"{FRONTEND_URL}/?success=true&connection_id={conn.id}",
+            url=f"{FRONTEND_URL}/?zoho_connected=true&connection_id={conn.id}",
             status_code=302
         )
 
     except Exception as e:
         return RedirectResponse(
-            url=f"{FRONTEND_URL}/?error={quote_plus(str(e))}",
+            url=f"{FRONTEND_URL}/?zoho_error={quote_plus(str(e))}",
             status_code=302
         )
 

@@ -46,7 +46,7 @@
     <div class="line"></div>
 
     <b>Invoice: </b>{{ invoice.invoice_number }}<br>
-    <b>Date: </b>{{ invoice.invoice_date }}<br>
+    <b>Date: </b>{{ invoice.invoice_date.strftime('%d-%m-%Y') }}<br>
 
     <div class="line"></div>
 

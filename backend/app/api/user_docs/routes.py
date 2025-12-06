@@ -9,6 +9,25 @@ from ..invoices.routes import get_current_user
 router = APIRouter(prefix="/user_docs", tags=["user-docs"])
 
 
+@router.post("/sales_logo")
+async def upload_sales_logo_route(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return await user_docs_crud.upload_sales_logo(
+        db, current_user.effective_user_id, file
+    )
+
+
+@router.get("/sales_logo")
+async def get_sales_logo_route(
+    db: AsyncSession = Depends(get_db), current_user=Depends(get_current_user)
+):
+    doc = await user_docs_crud.get_sales_logo(db, current_user.effective_user_id)
+    return {"ok": True, "data": doc.file_url if doc else None}
+
+
 @router.get("/timeline")
 async def get_docs_timeline(
     db: AsyncSession = Depends(get_db),

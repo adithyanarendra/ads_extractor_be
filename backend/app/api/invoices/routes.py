@@ -1,3 +1,4 @@
+from datetime import date
 import select
 import asyncio
 import os
@@ -13,7 +14,7 @@ from fastapi import (
     HTTPException,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, or_
 from urllib.parse import urlparse
 from typing import Tuple
 
@@ -185,6 +186,20 @@ async def review_invoice(
     return {"ok": True, "msg": "Invoice review updated", "invoice_id": invoice.id}
 
 
+@router.get("/archived")
+async def get_archived_invoices(
+    search: str | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    invoices = await invoices_crud.list_archived_expense_invoices(
+        db, current_user.effective_user_id, search, from_date, to_date
+    )
+    return {"ok": True, "invoices": invoices, "total_count": len(invoices)}
+
+
 @router.get(
     "/all/{invoice_type}/{range_str}",
     response_model=invoices_schemas.InvoiceListResponse,
@@ -234,6 +249,7 @@ async def get_all_invoices_paginated(
         Invoice.owner_id == current_user.effective_user_id,
         Invoice.batch_id.is_(None),
         Invoice.type == invoice_type,
+        or_(Invoice.is_published == False, Invoice.is_published.is_(None)),
     )
     total_result = await db.execute(total_stmt)
     total_count = total_result.scalar() or 0

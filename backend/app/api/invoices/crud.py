@@ -1,10 +1,10 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import update, delete, or_, and_, desc, func, Float
+from sqlalchemy import update, delete, or_, desc, func, select
 import re
 from typing import Optional, Dict
 from . import models as invoices_models
-from datetime import datetime
+from datetime import datetime, date
 import asyncio
 from ...utils.ocr_parser import process_invoice
 from ...core.database import SessionLocal
@@ -18,7 +18,6 @@ def sanitize_total(value):
         return 0.0
     if isinstance(value, (int, float)):
         return float(value)
-    # Remove commas and non-numeric characters except dot
     clean = re.sub(r"[^0-9.]", "", str(value))
     try:
         return float(clean) if clean else 0.0
@@ -201,6 +200,49 @@ async def get_invoice_by_id_and_owner(
     return result.scalar_one_or_none()
 
 
+async def list_archived_expense_invoices(
+    db: AsyncSession,
+    owner_id: int,
+    search: str | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+):
+    Invoice = invoices_models.Invoice
+
+    invoice_date_sql = func.to_date(Invoice.invoice_date, "DD-MM-YYYY")
+
+    stmt = select(Invoice).where(
+        Invoice.owner_id == owner_id,
+        Invoice.is_deleted == False,
+        Invoice.type == "expense",
+    )
+
+    stmt = stmt.where(Invoice.invoice_date.op("~")(r"^\d{2}-\d{2}-\d{4}$"))
+
+    if search:
+        like = f"%{search.lower()}%"
+        stmt = stmt.where(
+            or_(
+                func.lower(Invoice.vendor_name).ilike(like),
+                func.lower(Invoice.invoice_number).ilike(like),
+                func.lower(Invoice.trn_vat_number).ilike(like),
+                func.lower(Invoice.description).ilike(like),
+            )
+        )
+
+    if from_date:
+        stmt = stmt.where(invoice_date_sql >= from_date)
+
+    if to_date:
+        stmt = stmt.where(invoice_date_sql <= to_date)
+
+    stmt = stmt.order_by(desc(Invoice.created_at))
+    result = await db.execute(stmt)
+    invoices = result.scalars().all()
+
+    return invoices
+
+
 async def get_invoice_by_id(
     db: AsyncSession, invoice_id: int
 ) -> Optional[invoices_models.Invoice]:
@@ -229,6 +271,7 @@ async def list_invoices_by_owner(
     stmt = select(invoices_models.Invoice).where(
         invoices_models.Invoice.owner_id == owner_id,
         invoices_models.Invoice.batch_id.is_(None),
+        or_(Invoice.is_published == False, Invoice.is_published.is_(None)),
     )
 
     if invoice_type:
@@ -311,16 +354,27 @@ async def update_invoice_review(
             "has_tax_note",
             "tax_note_type",
             "tax_note_amount",
+            "chart_of_account_id",
+            "chart_of_account_name",
         }
         for k, v in corrected_fields.items():
             if k in allowed:
+
+                # Numeric values stored as VARCHAR in DB
                 if k in {"before_tax_amount", "tax_amount", "total", "tax_note_amount"}:
                     if v is not None and v != "":
-                        setattr(invoice, k, str(v))
+                        setattr(invoice, k, str(v))  # keep feature branch behavior
                     else:
                         setattr(invoice, k, None)
+
                 else:
                     setattr(invoice, k, v)
+
+        if "chart_of_account_id" in corrected_fields:
+            invoice.chart_of_account_id = corrected_fields["chart_of_account_id"]
+
+        if "chart_of_account_name" in corrected_fields:
+            invoice.chart_of_account_name = corrected_fields["chart_of_account_name"]
 
     await db.commit()
     await db.refresh(invoice)
@@ -528,7 +582,7 @@ async def update_invoice_qb_id(db: AsyncSession, invoice_id: int, qb_id: str):
     stmt = (
         update(Invoice)
         .where(Invoice.id == invoice_id)
-        .values(qb_id=qb_id)
+        .values(qb_id=qb_id, is_published=True)
         .execution_options(synchronize_session=False)
     )
     await db.execute(stmt)
@@ -549,6 +603,7 @@ async def list_invoices_by_company(
     stmt = select(invoices_models.Invoice).where(
         invoices_models.Invoice.company_id == company_id,
         invoices_models.Invoice.batch_id.is_(None),
+        invoices_models.Invoice.is_published == False,
     )
 
     if invoice_type:
@@ -604,6 +659,17 @@ async def get_invoice_by_id_and_company(
     )
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def mark_invoice_as_published(db: AsyncSession, invoice_id: int):
+    stmt = (
+        update(Invoice)
+        .where(Invoice.id == invoice_id)
+        .values(is_published=True)
+        .execution_options(synchronize_session=False)
+    )
+    await db.execute(stmt)
+    await db.commit()
 
 
 async def soft_delete_invoice(

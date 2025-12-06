@@ -3,70 +3,203 @@
 
 <head>
     <style>
+        /* PAGE SETTINGS */
+        @page {
+            margin: 10px;
+
+            @bottom-center {
+                content: "This is a computer generated Invoice.";
+                font-size: 10px;
+                color: #555;
+            }
+        }
+
         body {
-            font-family: 'Arial';
+            font-family: Arial, sans-serif;
             font-size: 12px;
+            margin: 20px;
+        }
+
+        h2 {
+            text-align: center;
+            margin-bottom: 10px;
+            letter-spacing: 1px;
+        }
+
+        .block {
+            margin-bottom: 10px;
+            line-height: 1.4;
+        }
+
+        .flex {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+        }
+
+        .half {
+            width: 48%;
         }
 
         .table {
             width: 100%;
             border-collapse: collapse;
+            margin-top: 12px;
         }
 
-        .table th,
+        .table th {
+            padding: 7px;
+            background: #444;
+            color: white;
+            font-weight: bold;
+            text-align: left;
+            font-size: 12px;
+        }
+
         .table td {
-            border: 1px solid #000;
-            padding: 4px;
+            padding: 7px;
+            background: #f5f5f5;
+            font-size: 12px;
+            vertical-align: top;
+        }
+
+        .table tr+tr td {
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .description-text {
+            font-size: 10px;
+            color: #444;
+            margin-top: 2px;
+        }
+
+        .totals {
+            margin-top: 15px;
+            line-height: 1.5;
+            font-size: 13px;
+        }
+
+        .totals b {
+            width: 160px;
+            display: inline-block;
+        }
+
+        .terms-box {
+            white-space: pre-wrap;
+            line-height: 1.4;
+            font-size: 11px;
+            margin-top: 5px;
         }
     </style>
 </head>
 
 <body>
 
-    <h2 style="text-align:center;">TAX INVOICE</h2>
+    <h2>TAX INVOICE</h2>
 
-    <b>Seller:</b><br>
-    {{ invoice.company_name }}<br>
-    TRN: {{ invoice.company_trn }}<br>
-    {{ invoice.company_address }}<br><br>
+    <div class="flex">
+        <div class="half">
+            {% if logo_url %}
+            <div style="text-align:center; margin-bottom:12px;">
+                <img src="{{ logo_url }}" style="max-height:80px; max-width:100%; object-fit:contain;">
+            </div>
+            {% endif %}
+            <div class="block">
+                <b>{{ invoice.company_name }}</b><br>
 
-    <b>Customer:</b><br>
-    {{ invoice.customer_name or '' }}<br>
-    {{ invoice.customer_trn or '' }}<br><br>
+                {% if invoice.company_trn %}
+                TRN: {{ invoice.company_trn }}<br>
+                {% endif %}
 
-    <b>Invoice No:</b> {{ invoice.invoice_number }}<br>
-    <b>Date:</b> {{ invoice.invoice_date }}<br><br>
+                {% if invoice.company_address %}
+                {{ invoice.company_address }}<br>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="half" style="text-align:right;">
+            <div class="block">
+                <b>Invoice #:</b> {{ invoice.invoice_number }}<br>
+                <b>Invoice Date:</b> {{ invoice.invoice_date.strftime('%d-%m-%Y') }}<br>
+                <b>Amount Due:</b> AED {{ invoice.total | float | round(2) }}<br>
+            </div>
+        </div>
+    </div>
+
+    <div style="font-weight:bold; margin-top:14px; margin-bottom:4px; font-size:13px;">
+        Bill To
+    </div>
+    <div class="block">
+        {{ invoice.customer_name or '' }}<br>
+        {% if invoice.customer_trn %}TRN: {{ invoice.customer_trn }}{% endif %}
+    </div>
 
     <table class="table">
         <thead>
             <tr>
-                <th>#</th>
+                <th style="width: 30px;">#</th>
                 <th>Description</th>
-                <th>Qty</th>
-                <th>Unit</th>
-                <th>VAT%</th>
-                <th>Total</th>
+                <th style="width: 60px;">Qty</th>
+                <th style="width: 80px;">Rate</th>
+                <th style="width: 70px;">Discount</th>
+                <th style="width: 60px;">VAT%</th>
+                <th style="width: 100px;">Amount</th>
             </tr>
         </thead>
         <tbody>
             {% for li in invoice.line_items %}
             <tr>
                 <td>{{ loop.index }}</td>
-                <td>{{ li.product.name or li.name or li.description }}</td>
-                <td>{{ li.quantity }}</td>
-                <td>{{ li.unit_cost }}</td>
+
+                <td>
+                    <div>
+                        <b>{{ li.name or li.product.name }}</b>
+                        {% if li.description %}
+                        <div class="description-text">{{ li.description }}</div>
+                        {% endif %}
+                    </div>
+                </td>
+
+                <td>{{ li.quantity | float | round(2) }}</td>
+                <td>{{ li.unit_cost | float | round(2) }}</td>
+
+                <td>
+                    {% if li.discount %}
+                    {{ li.discount | float | round(2) }}
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+
                 <td>{{ li.vat_percentage }}</td>
-                <td>{{ li.line_total }}</td>
+
+                <td>{{ li.line_total | float | round(2) }}</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
 
-    <br><br>
+    <div class="totals">
+        <b>Subtotal:</b> AED {{ invoice.subtotal | float | round(2) }}<br>
+        <b>VAT:</b> AED {{ invoice.total_vat | float | round(2) }}<br>
 
-    <b>Subtotal:</b> {{ invoice.subtotal }}<br>
-    <b>VAT:</b> {{ invoice.total_vat }}<br>
-    <b>Total:</b> {{ invoice.total }}<br>
+        {% if invoice.discount and invoice.discount > 0 %}
+        <b>Invoice Discount:</b> AED -{{ invoice.discount | float | round(2) }}<br>
+        {% endif %}
+
+        <b>Total:</b> AED {{ invoice.total | float | round(2) }}<br>
+
+        <b>Total in Words:</b> UAE Dirham {{ total_in_words }}
+    </div>
+
+    {% if invoice.terms_and_conditions %}
+    <div style="font-weight:bold; margin-top:18px; margin-bottom:4px; font-size:13px;">
+        Terms & Conditions
+    </div>
+    <div class="terms-box">
+        {{ invoice.terms_and_conditions | e | replace('\n', '<br>') | safe }}
+    </div>
+    {% endif %}
 
 </body>
 

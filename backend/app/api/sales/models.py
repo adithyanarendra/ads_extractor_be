@@ -30,7 +30,6 @@ class SalesProduct(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-
 class SalesCustomer(Base):
     __tablename__ = "sales_customers"
 
@@ -49,20 +48,17 @@ class SalesCustomer(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-
 class SalesInvoice(Base):
     __tablename__ = "sales_invoices"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
 
-    # Seller snapshot
     company_name = Column(String, nullable=False)
     company_name_arabic = Column(String, nullable=True)
     company_trn = Column(String, nullable=False)
     company_address = Column(Text, nullable=True)
 
-    # Customer snapshot
     customer_id = Column(Integer, ForeignKey("sales_customers.id"), nullable=True)
     customer_name = Column(String, nullable=True)
     customer_trn = Column(String, nullable=True)
@@ -71,6 +67,8 @@ class SalesInvoice(Base):
     invoice_date = Column(DateTime(timezone=True), server_default=func.now())
 
     notes = Column(Text, nullable=True)
+    terms_and_conditions = Column(Text, nullable=True)
+
     discount = Column(Float, nullable=True)
 
     subtotal = Column(Float, nullable=False)
@@ -106,7 +104,6 @@ class SalesInvoiceLineItem(Base):
     invoice = relationship("SalesInvoice", back_populates="line_items")
     product = relationship("SalesProduct")
 
-
 class SalesInventoryItem(Base):
     __tablename__ = "sales_inventory_items"
 
@@ -123,3 +120,16 @@ class SalesInventoryItem(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     product = relationship("SalesProduct")
+
+
+class SalesTerms(Base):
+    __tablename__ = "sales_terms"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True)
+    terms = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

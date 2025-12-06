@@ -16,7 +16,7 @@ from ...core.database import SessionLocal
 from .models import UserDocs
 from ..users.crud import get_user_by_id
 from ..batches import crud as batches_crud
-from ...utils.r2 import upload_to_r2_bytes, get_file_from_r2
+from ...utils.r2 import upload_to_r2_bytes, get_file_from_r2, delete_from_r2
 from ...utils.user_doc_parser import extract_document_meta
 
 from ...utils.doc_prompts import ALLOWED_DOC_TYPES
@@ -81,7 +81,11 @@ async def upload_user_doc(
 
 async def list_user_docs(db: AsyncSession, user_id: int) -> List[UserDocs]:
     try:
-        result = await db.execute(select(UserDocs).where(UserDocs.user_id == user_id))
+        result = await db.execute(
+            select(UserDocs).where(
+                UserDocs.user_id == user_id, UserDocs.doc_type != "sales_invoice_logo"
+            )
+        )
         docs = result.scalars().all()
         data = [
             {
@@ -161,7 +165,8 @@ async def delete_user_doc(db: AsyncSession, user_id: int, doc_id: int):
 
 
 async def process_documents_info(db: AsyncSession, doc: UserDocs):
-
+    if doc.doc_type == "sales_invoice_logo":
+        return
     file_key = doc.file_url.split("r2.dev/")[-1]
     file_bytes = get_file_from_r2(file_key).read()
 
@@ -181,6 +186,8 @@ async def process_documents_info(db: AsyncSession, doc: UserDocs):
 
 
 async def process_doc_metadata(doc_id: int, file_bytes: bytes, doc_type: str):
+    if doc_type == "sales_invoice_logo":
+        return
     if not file_bytes or len(file_bytes) < 100:
         print(f"[WARN] Empty or invalid file_bytes for doc {doc_id}")
         return
@@ -297,7 +304,11 @@ async def _autocreate_child_batches(
 
 
 async def get_user_docs_for_timeline(db: AsyncSession, user_id: int):
-    result = await db.execute(select(UserDocs).where(UserDocs.user_id == user_id))
+    result = await db.execute(
+        select(UserDocs).where(
+            UserDocs.user_id == user_id, UserDocs.doc_type != "sales_invoice_logo"
+        )
+    )
     docs = result.scalars().all()
 
     timeline = []
@@ -339,3 +350,48 @@ async def get_user_docs_for_timeline(db: AsyncSession, user_id: int):
         "message": "Timeline sorted successfully",
         "data": timeline_sorted,
     }
+
+
+async def get_sales_logo(db: AsyncSession, user_id: int):
+    res = await db.execute(
+        select(UserDocs).where(
+            UserDocs.user_id == user_id, UserDocs.doc_type == "sales_invoice_logo"
+        )
+    )
+    return res.scalar_one_or_none()
+
+
+async def upload_sales_logo(db: AsyncSession, user_id: int, file: UploadFile):
+    allowed = ["image/png", "image/jpeg", "image/jpg", "image/webp"]
+    if file.content_type not in allowed:
+        return {"ok": False, "message": "Invalid image type"}
+
+    file_bytes = await file.read()
+
+    existing = await get_sales_logo(db, user_id)
+    if existing:
+        try:
+            key = existing.file_url.split("r2.dev/")[-1]
+            delete_from_r2(key)
+        except:
+            pass
+        await db.delete(existing)
+        await db.commit()
+
+    ext = ".png"
+    r2_key = f"{user_id}/sales-invoice-logo-{user_id}{ext}"
+
+    url = upload_to_r2_bytes(file_bytes, r2_key)
+
+    new_doc = UserDocs(
+        user_id=user_id,
+        doc_type="sales_invoice_logo",
+        file_name=f"sales-invoice-logo-{user_id}",
+        file_url=url,
+        expiry_date=None,
+    )
+    db.add(new_doc)
+    await db.commit()
+    await db.refresh(new_doc)
+
+    return {"ok": True, "data": url}

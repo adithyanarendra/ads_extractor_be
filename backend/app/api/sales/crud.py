@@ -1,3 +1,4 @@
+from datetime import datetime
 from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 from decimal import Decimal, ROUND_HALF_UP
@@ -181,7 +182,7 @@ def compute_line_item_totals(items):
         enriched.append(
             {
                 "product_id": item.product_id,
-                "name": item.name,
+                "name": item.name or item.description,
                 "description": item.description,
                 "quantity": item.quantity,
                 "unit_cost": item.unit_cost,
@@ -255,12 +256,28 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
     if not company_name or not company_trn:
         return None
 
-    if not payload.line_items or len(payload.line_items) == 0:
-        manual_total = payload.total or 0
-        vat_percentage = getattr(payload, "manual_vat_percentage", 0) or 0
+    if not payload.customer_name or payload.customer_name.strip() == "":
+        payload.customer_name = "Cash Customer"
 
-        vat_amount = (manual_total * vat_percentage) / 100 if vat_percentage else 0
-        subtotal = manual_total - vat_amount
+    if not payload.invoice_number:
+        payload.invoice_number = await get_next_invoice_number(db, owner_id)
+
+    terms_text = ""
+    terms_obj = await get_terms(db, owner_id)
+    if terms_obj:
+        terms_text = terms_obj.terms
+
+    if not payload.line_items or len(payload.line_items) == 0:
+        manual_total = float(payload.total or 0)
+        vat_percentage = float(getattr(payload, "manual_vat_percentage", 0) or 5)
+
+        subtotal = manual_total / (1 + vat_percentage / 100)
+        vat_amount = manual_total - subtotal
+
+        if vat_percentage == 5:
+            item_name = "Standard Rated Supplies"
+        else:
+            item_name = f"Supplies @ {vat_percentage}% VAT"
 
         inv = models.SalesInvoice(
             owner_id=owner_id,
@@ -273,15 +290,30 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
             customer_trn=payload.customer_trn,
             invoice_number=payload.invoice_number,
             notes=payload.notes,
-            subtotal=subtotal,
-            total_vat=vat_amount,
+            terms_and_conditions=terms_text,
+            subtotal=round(subtotal, 2),
+            total_vat=round(vat_amount, 2),
             discount=0,
-            total=manual_total,
+            total=round(manual_total, 2),
         )
-
         db.add(inv)
         await db.commit()
         await db.refresh(inv)
+
+        li = models.SalesInvoiceLineItem(
+            invoice_id=inv.id,
+            product_id=None,
+            name=item_name,
+            description=item_name,
+            quantity=1,
+            unit_cost=round(subtotal, 2),
+            vat_percentage=vat_percentage,
+            discount=0,
+            line_total=round(manual_total, 2),
+        )
+
+        db.add(li)
+        await db.commit()
 
         return inv
 
@@ -313,6 +345,7 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
         customer_trn=payload.customer_trn,
         invoice_number=payload.invoice_number,
         notes=payload.notes,
+        terms_and_conditions=terms_text,
         discount=invoice_discount,
         subtotal=totals["subtotal"],
         total_vat=totals["vat"],
@@ -605,3 +638,59 @@ async def get_invoice_with_items(db, owner_id, invoice_id):
         )
     )
     return res.scalar_one_or_none()
+
+
+async def get_terms(db, owner_id):
+    res = await db.execute(
+        select(models.SalesTerms).where(models.SalesTerms.owner_id == owner_id)
+    )
+    return res.scalar_one_or_none()
+
+
+async def update_terms(db, owner_id, payload: schemas.SalesTermsUpdate):
+    existing = await get_terms(db, owner_id)
+
+    if existing:
+        existing.terms = payload.terms
+        await db.commit()
+        return existing
+
+    obj = models.SalesTerms(owner_id=owner_id, terms=payload.terms)
+    db.add(obj)
+    await db.commit()
+    return obj
+
+
+def number_to_words(n):
+    from num2words import num2words
+
+    return num2words(n, lang="en").title()
+
+
+async def get_next_invoice_number(db, owner_id):
+    today = datetime.now().strftime("%Y/%m/%d")
+    prefix = f"{today}-"
+
+    # Get max invoice number for today
+    res = await db.execute(
+        select(models.SalesInvoice.invoice_number)
+        .where(
+            models.SalesInvoice.owner_id == owner_id,
+            models.SalesInvoice.invoice_number.like(f"{prefix}%"),
+        )
+        .order_by(models.SalesInvoice.invoice_number.desc())
+        .limit(1)
+    )
+
+    last = res.scalar_one_or_none()
+
+    if not last:
+        return f"{prefix}001"
+
+    try:
+        last_num = int(last.split("-")[-1])
+    except:
+        last_num = 0
+
+    next_num = last_num + 1
+    return f"{prefix}{next_num:03d}"

@@ -35,13 +35,15 @@
     {{ invoice.company_address }}<br>
     TRN: {{ invoice.company_trn }}<br>
 
-    <div class="section-title">Customer Details</div>
+    <div class="section-title">Bill To:</div>
     <b>{{ invoice.customer_name }}</b><br>
-    TRN: {{ invoice.customer_trn or "" }}<br>
+    {% if invoice.customer_trn %}
+    TRN: {{ invoice.customer_trn }}<br>
+    {% endif %}
 
     <div class="section-title">Invoice Details</div>
     Invoice #: {{ invoice.invoice_number }}<br>
-    Date: {{ invoice.invoice_date }}<br>
+    Date: {{ invoice.invoice_date.strftime('%d-%m-%Y') }}<br>
 
     <br>
     <table class="table">
@@ -62,7 +64,7 @@
             {% for li in invoice.line_items %}
             <tr>
                 <td>{{ loop.index }}</td>
-                <td>{{ li.product.name or li.name }}</td>
+                <td>{{ li.product.name or li.name or li.description}}</td>
                 <td>{{ li.description or '' }}</td>
                 <td>{{ li.quantity }}</td>
                 <td>{{ li.unit_cost }}</td>
@@ -80,7 +82,20 @@
     <b>VAT:</b> {{ invoice.total_vat }}<br>
     <b>Discount:</b> {{ invoice.discount or 0 }}<br>
     <b>Total Payable:</b> {{ invoice.total }}<br>
+    <b>Total In Words:</b> {{ total_in_words }}
 
+    {% if invoice.terms_and_conditions %}
+    <br><br>
+    <b>Terms & Conditions</b><br>
+    <div style="white-space: pre-wrap; font-size: 11px;">
+        {% set lines = invoice.terms_and_conditions.strip().split('\n') %}
+        <div style="font-size: 11px;">
+            {% for line in lines %}
+            {{ line.strip() }}{% if not loop.last %}<br>{% endif %}
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
 </body>
 
 </html>
