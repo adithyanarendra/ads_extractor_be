@@ -1,12 +1,25 @@
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, UploadFile, File, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 import asyncio
 from ...core.database import get_db
 from . import crud as user_docs_crud
+from . import schemas as user_docs_schemas
 from ..invoices.routes import get_current_user
 
 
 router = APIRouter(prefix="/user_docs", tags=["user-docs"])
+
+
+@router.get("/processing_count")
+async def get_processing_count_route(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    count = await user_docs_crud.get_processing_count(
+        db, current_user.effective_user_id
+    )
+
+    return {"ok": True, "count": count}
 
 
 @router.post("/sales_logo")
@@ -86,6 +99,30 @@ async def get_all_docs(
     current_user=Depends(get_current_user),
 ):
     return await user_docs_crud.list_user_docs(db, current_user.effective_user_id)
+
+
+@router.patch("/{doc_id}")
+async def patch_user_doc(
+    doc_id: int,
+    payload: user_docs_schemas.UpdateUserDocSchema = Body(...),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    data = payload.dict(exclude_unset=True)
+    res = await user_docs_crud.update_user_doc(
+        db, current_user.effective_user_id, doc_id, data
+    )
+    if not res.get("ok"):
+        return {
+            "ok": False,
+            "message": res.get("message", "Update failed"),
+            "error": res.get("error"),
+        }
+    return {
+        "ok": True,
+        "message": res.get("message", "Document updated"),
+        "data": res.get("data"),
+    }
 
 
 @router.get("/details/{doc_id}")

@@ -27,6 +27,7 @@ from app.core.auth import decode_token
 from app.api.users.crud import mark_qb_connected, mark_qb_disconnected
 from app.core.auth import get_current_user
 from ..users import models as users_models
+from app.api.invoices.crud import reset_invoices_on_software_switch
 
 router = APIRouter(prefix="/quickbooks", tags=["QuickBooks"])
 
@@ -167,6 +168,7 @@ async def quickbooks_callback(request: Request, db: AsyncSession = Depends(get_d
     )
 
     await mark_qb_connected(db, user_id)
+    await reset_invoices_on_software_switch(db, user_id, 'qb')
 
     return RedirectResponse(url=f"{redirect_url}&qb_connected=true")
 

@@ -1,4 +1,5 @@
 import os, base64, mimetypes, json, re
+from fastapi.concurrency import run_in_threadpool
 from dateutil import parser as date_parser
 from datetime import datetime
 from openai import OpenAI
@@ -9,37 +10,62 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..api.user_docs.models import UserDocs
 
 from .ocr_parser import convert_pdf_to_images
-from .doc_prompts import get_prompt, ALLOWED_DOC_TYPES
+from .doc_prompts import get_prompt, ALLOWED_DOC_TYPES, GENERIC_TYPES
 from .doc_fields import DOC_TYPE_MAP
 
 from ..utils.r2 import upload_to_r2_bytes, delete_from_r2
 
-DOC_TYPE_DETECT_PROMPT = f"""
-You are a document classifier for UAE compliance documents.
+DOC_TYPE_DETECT_PROMPT = """
+You are a universal document classifier.
 
-Given the following images of ONE document, decide which type it is.
-You MUST choose exactly ONE of these values:
+Given the images of a document, classify it into one of these doc_type values.
+Choose the most accurate and specific option:
 
-{", ".join(sorted(ALLOWED_DOC_TYPES))}
+CORE UAE & GLOBAL ID DOCUMENTS:
+- passport
+- emirates_id
+- driving_license
+- residency_visa
+- employee_visa
 
-Definitions (for your reasoning only, do NOT output them):
-- "vat_certificate": UAE VAT registration certificates.
-- "ct_certificate": UAE Corporate Tax registration certificates.
-- "trade_license": Trade/Business license documents.
-- "passport": Passport identity page.
-- "emirates_id": UAE Emirates ID card.
-- "moa": Memorandum of Association or similar company formation documents.
+BUSINESS COMPLIANCE DOCUMENTS:
+- vat_certificate
+- ct_certificate
+- trade_license
+- moa  // memorandum of association
+- company_profile
+- board_resolution
 
-Return ONLY a JSON object like:
+VEHICLE & INSURANCE:
+- car_insurance
+- vehicle_registration
+- vehicle_purchase_invoice
 
-{{
-  "doc_type": "vat_certificate"
-}}
+FINANCIAL DOCUMENTS:
+- bank_statement
+- salary_certificate
+- tax_invoice
+- payment_receipt
+
+AGREEMENTS & LEGAL DOCUMENTS:
+- rental_contract
+- employment_contract
+- contract_agreement
+- noc_letter
+
+OTHER:
+- other_document
 
 Rules:
-- "doc_type" must be exactly one of the allowed values.
-- If unsure, choose the closest matching type.
-- No extra keys, no comments, no markdown.
+- Choose ONLY one doc_type.
+- If the document clearly matches a category (e.g., Indian Driving License), classify it as "driving_license".
+- If unsure or unfamiliar, return: "other_document".
+
+Return ONLY JSON:
+
+{
+  "doc_type": "driving_license"
+}
 """
 
 
@@ -80,6 +106,50 @@ def slugify(value: str | None) -> str:
     return value.strip("_")
 
 
+def resolve_new_filename(doc, detected_doc_type, data):
+    slug = slugify
+
+    if detected_doc_type == "passport":
+        return f"passport_{slug(data.get('passport_name')) or doc.user_id}"
+
+    if detected_doc_type == "trade_license":
+        return f"trade_license_{slug(data.get('tl_business_name_en')) or doc.user_id}"
+
+    if detected_doc_type == "ct_certificate":
+        suffix = (
+            slug(data.get("ct_legal_name_en"))
+            or slug(data.get("ct_trn"))
+            or str(doc.user_id)
+        )
+        return f"ct_certificate_{suffix}"
+
+    if detected_doc_type == "emirates_id":
+        suffix = (
+            slug(data.get("emirates_id_name"))
+            or slug(data.get("emirates_id_number"))
+            or doc.user_id
+        )
+        return f"emirates_id_{suffix}"
+
+    if detected_doc_type == "vat_certificate":
+        suffix = (
+            slug(data.get("vat_legal_name_english"))
+            or slug(data.get("vat_license_holder_name"))
+            or doc.user_id
+        )
+        return f"vat_certificate_{suffix}"
+
+    if detected_doc_type in GENERIC_TYPES:
+        suffix = (
+            slug(data.get("generic_document_number"))
+            or slug(data.get("generic_title"))
+            or doc.user_id
+        )
+        return f"{detected_doc_type}_{suffix}"
+
+    return detected_doc_type
+
+
 async def extract_document_meta(
     db: AsyncSession, doc_id: int, file_bytes: bytes, doc_type: str
 ):
@@ -98,7 +168,7 @@ async def extract_document_meta(
     is_pdf = ext == "pdf"
 
     if is_pdf:
-        images = convert_pdf_to_images(file_bytes)
+        images = await run_in_threadpool(convert_pdf_to_images, file_bytes)
     else:
         mime, _ = mimetypes.guess_type(f"a.{ext}")
         images = [(mime, base64.b64encode(file_bytes).decode())]
@@ -112,7 +182,8 @@ async def extract_document_meta(
                     {"type": "input_image", "image_url": f"data:{mime};base64,{b64}"}
                 )
 
-            cls_res = client.responses.create(
+            cls_res = await run_in_threadpool(
+                client.responses.create,
                 model="gpt-4.1",
                 input=[{"role": "user", "content": classify_input}],
             )
@@ -143,8 +214,10 @@ async def extract_document_meta(
         )
 
     try:
-        res = client.responses.create(
-            model="gpt-4.1", input=[{"role": "user", "content": chat_input}]
+        res = await run_in_threadpool(
+            client.responses.create,
+            model="gpt-4.1",
+            input=[{"role": "user", "content": chat_input}],
         )
 
         raw = res.output_text.strip()
@@ -154,6 +227,10 @@ async def extract_document_meta(
 
         data = json.loads(raw)
 
+        doc.generic_title = data.get("generic_title")
+        doc.generic_document_number = data.get("generic_document_number")
+        doc.generic_action_dates = data.get("generic_action_dates")
+        doc.generic_parties = data.get("generic_parties")
         doc.expiry_date = normalize_date(data.get("expiry_date")) or doc.expiry_date
         doc.filing_date = normalize_date(data.get("filing_date"))
         doc.batch_start_date = normalize_date(data.get("batch_start_date"))
@@ -194,6 +271,13 @@ async def extract_document_meta(
                 holder = slugify(data.get("vat_license_holder_name"))
                 suffix = legal_en or holder or str(doc.user_id)
                 new_file_name = f"vat_certificate_{suffix}"
+            elif detected_doc_type in GENERIC_TYPES:
+                ref = slugify(data.get("generic_document_number")) or slugify(
+                    data.get("generic_title")
+                )
+                suffix = ref or str(doc.user_id)
+                new_file_name = f"{detected_doc_type}_{suffix}"
+
             else:
                 new_file_name = detected_doc_type
 
@@ -204,15 +288,16 @@ async def extract_document_meta(
 
         new_key = f"{doc.user_id}/{new_file_name}{ext}"
 
-        new_url = upload_to_r2_bytes(file_bytes, new_key)
+        new_url = await run_in_threadpool(upload_to_r2_bytes, file_bytes, new_key)
 
         try:
-            delete_from_r2(old_key)
+            await run_in_threadpool(delete_from_r2, old_key)
         except:
             print(f"[extract_document_meta] ⚠️ Failed to delete old R2 key: {old_key}")
 
         doc.file_name = new_file_name
         doc.file_url = new_url
+        doc.is_processing = False
 
         await db.commit()
         await db.refresh(doc)

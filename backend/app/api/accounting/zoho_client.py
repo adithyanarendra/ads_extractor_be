@@ -1,6 +1,9 @@
 import requests
 import os
 from typing import Dict, List, Optional
+from sqlalchemy import update
+from app.api.invoices.models import Invoice
+from sqlalchemy.ext.asyncio import AsyncSession
 
 class ZohoClient:
     """Handle all Zoho Books API calls"""
@@ -167,7 +170,18 @@ class ZohoClient:
             print(f"Error creating sales invoice: {str(e)}")
             return {"error": str(e)}
 
-    def push_multiple_invoices(self, payload: Dict) -> Dict:
+    async def update_invoice_by_id(self, db: AsyncSession, invoice_id: int):
+        stmt = (
+            update(Invoice)
+            .where(Invoice.id == invoice_id)
+            .values(accounting_software="zb")
+            .execution_options(synchronize_session=False)
+        )
+
+        await db.execute(stmt)
+        await db.commit()
+
+    async def push_multiple_invoices(self, payload: Dict, db: AsyncSession) -> Dict:
         """Push multiple invoices to Zoho (expense bills or sales invoices)"""
         invoices = payload.get("invoices", [])
         account_id = payload.get("account_id")
@@ -176,9 +190,11 @@ class ZohoClient:
         if not account_id:
             return {"success": 0, "failed": len(invoices), "error": "Missing account_id"}
 
-        summary = {"success": 0, "failed": 0, "errors": []}
+        summary = {"success": 0, "failed": 0, "errors": [], "details": []}
 
         for invoice in invoices:
+            invoice_id = invoice.get("id")
+
             if invoice_type == "sales":
                 customer_name = invoice.get("customer_name") or invoice.get("vendor_name") or "Unknown Customer"
                 customer_id = self.get_or_create_customer(customer_name)
@@ -214,10 +230,37 @@ class ZohoClient:
                 }
                 result = self.create_bill(bill_payload)
 
+            # Detect duplicate errors from Zoho (e.g., bill already exists)
+            is_duplicate = False
+            if isinstance(result, dict):
+                msg = (result.get("message") or "").lower()
+                if result.get("code") == 13011 or "already been created" in msg or "already exists" in msg:
+                    is_duplicate = True
+
             if isinstance(result, dict) and result.get("code") == 0:
                 summary["success"] += 1
+                summary["details"].append(
+                    {"invoice_id": invoice_id, "status": "success"}
+                )
+                if invoice_id is not None:
+                    await self.update_invoice_by_id(db, invoice_id)
+            elif is_duplicate:
+                summary["success"] += 1
+                summary["details"].append(
+                    {
+                        "invoice_id": invoice_id,
+                        "status": "duplicate",
+                        "error": result.get("message"),
+                    }
+                )
+                if invoice_id is not None:
+                    await self.update_invoice_by_id(db, invoice_id)
             else:
                 summary["failed"] += 1
-                summary["errors"].append(str(result))
+                msg = result.get("message") if isinstance(result, dict) else str(result)
+                summary["errors"].append(msg)
+                summary["details"].append(
+                    {"invoice_id": invoice_id, "status": "failed", "error": msg}
+                )
 
         return summary

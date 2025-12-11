@@ -1,9 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-
 from ...core.database import Base
-
 
 class Invoice(Base):
     __tablename__ = "invoices"
@@ -20,6 +18,7 @@ class Invoice(Base):
     reviewed = Column(Boolean, default=False)
     remarks = Column(String, nullable=True)
     description = Column(String, nullable=True)
+    is_paid = Column(Boolean, default=False, nullable=False)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
     created_at = Column(
@@ -38,6 +37,8 @@ class Invoice(Base):
     tax_note_type = Column(String(20), nullable=True)
     tax_note_amount = Column(String, nullable=True)
     is_published = Column(Boolean, default=False, nullable=False)
+    accounting_software = Column(String(10), nullable=False, default="none")
+
 
     qb_id = Column(Integer, nullable=True)
     chart_of_account_id = Column(String, nullable=True)

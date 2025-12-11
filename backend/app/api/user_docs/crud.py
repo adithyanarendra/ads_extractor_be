@@ -19,9 +19,86 @@ from ..batches import crud as batches_crud
 from ...utils.r2 import upload_to_r2_bytes, get_file_from_r2, delete_from_r2
 from ...utils.user_doc_parser import extract_document_meta
 
-from ...utils.doc_prompts import ALLOWED_DOC_TYPES
+from ...utils.doc_prompts import ALLOWED_DOC_TYPES, GENERIC_TYPES
+from ...utils import doc_fields as fields
 
 from .schemas import DOC_SCHEMA_MAP, BaseDocSchema
+
+
+def _allowed_update_keys_for_doc_type(doc_type: str):
+    core_keys = {
+        "file_name",
+        "doc_type",
+        "expiry_date",
+        "filing_date",
+        "batch_start_date",
+        "generic_title",
+        "generic_document_number",
+        "generic_action_dates",
+        "generic_parties",
+    }
+
+    allowed = set(core_keys)
+
+    if doc_type == "vat_certificate":
+        allowed.update(fields.VAT_FIELDS)
+    elif doc_type == "ct_certificate":
+        allowed.update(fields.CT_FIELDS)
+    elif doc_type == "trade_license":
+        allowed.update(fields.TL_FIELDS)
+    elif doc_type == "passport":
+        allowed.update(fields.PASSPORT_FIELDS)
+    elif doc_type == "emirates_id":
+        allowed.update(fields.EMIRATES_ID_FIELDS)
+    elif doc_type in GENERIC_TYPES:
+        # generic fields already included
+        pass
+    else:
+        # if doc_type is None or other, still allow core + generic
+        pass
+
+    return allowed
+
+
+async def update_user_doc(db: AsyncSession, user_id: int, doc_id: int, payload: dict):
+    result = await db.execute(
+        select(UserDocs).where(UserDocs.id == doc_id, UserDocs.user_id == user_id)
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        return {"ok": False, "error": "Document not found", "message": "Update failed"}
+
+    target_doc_type = payload.get("doc_type") or doc.doc_type
+
+    if payload.get("doc_type"):
+        allowed_types = set(ALLOWED_DOC_TYPES) | set(GENERIC_TYPES)
+        if payload["doc_type"] not in allowed_types:
+            return {
+                "ok": False,
+                "error": "Invalid doc_type",
+                "message": "Invalid doc_type provided",
+            }
+
+    allowed_keys = _allowed_update_keys_for_doc_type(target_doc_type)
+
+    applied = {}
+    for k, v in payload.items():
+        if k not in allowed_keys:
+            continue
+        setattr(doc, k, v)
+        applied[k] = v
+
+    try:
+        await db.commit()
+        await db.refresh(doc)
+        return {
+            "ok": True,
+            "message": "Document updated",
+            "data": {"id": doc.id, "applied": applied},
+        }
+    except Exception as e:
+        await db.rollback()
+        return {"ok": False, "error": str(e), "message": "Update failed"}
 
 
 async def upload_user_doc(
@@ -64,6 +141,7 @@ async def upload_user_doc(
         file_url=file_url,
         expiry_date=expiry_date,
         doc_type=None,
+        is_processing=True,
     )
     db.add(new_doc)
     await db.commit()
@@ -193,16 +271,13 @@ async def process_doc_metadata(doc_id: int, file_bytes: bytes, doc_type: str):
         return
 
     async with SessionLocal() as db:
-        await extract_document_meta(
-            db=db, doc_id=doc_id, file_bytes=file_bytes, doc_type=doc_type
-        )
+        await extract_document_meta(db, doc_id, file_bytes, doc_type)
 
         result = await db.execute(select(UserDocs).where(UserDocs.id == doc_id))
         doc = result.scalar_one_or_none()
         if not doc:
             return
 
-        # If VAT, create batches
         if doc.doc_type == "vat_certificate":
             await _autocreate_vat_batches_for_doc(db, doc)
 
@@ -395,3 +470,13 @@ async def upload_sales_logo(db: AsyncSession, user_id: int, file: UploadFile):
     await db.refresh(new_doc)
 
     return {"ok": True, "data": url}
+
+
+async def get_processing_count(db: AsyncSession, user_id: int):
+    result = await db.execute(
+        select(UserDocs).where(
+            UserDocs.user_id == user_id, UserDocs.is_processing == True
+        )
+    )
+    docs = result.scalars().all()
+    return len(docs)

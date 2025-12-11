@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel
 
 
@@ -11,10 +11,33 @@ class BaseDocSchema(BaseModel):
     filing_date: Optional[datetime]
     batch_start_date: Optional[datetime]
     company_address: Optional[str]
+
+    generic_title: Optional[str]
+    generic_document_number: Optional[str]
+    generic_action_dates: Optional[list]
+    generic_parties: Optional[list]
+
     uploaded_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class UpdateUserDocSchema(BaseModel):
+    file_name: Optional[str] = None
+    doc_type: Optional[str] = None
+
+    expiry_date: Optional[datetime] = None
+    filing_date: Optional[datetime] = None
+    batch_start_date: Optional[datetime] = None
+
+    generic_title: Optional[str] = None
+    generic_document_number: Optional[str] = None
+    generic_action_dates: Optional[List[str]] = None
+    generic_parties: Optional[List[str]] = None
+
+    class Config:
+        orm_mode = True
 
 
 class VATCertificateSchema(BaseDocSchema):

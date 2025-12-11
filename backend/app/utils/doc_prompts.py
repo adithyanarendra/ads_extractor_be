@@ -153,6 +153,27 @@ ALLOWED_DOC_TYPES = {
     "moa",
 }
 
+GENERIC_TYPES = {
+    "driving_license",
+    "residency_visa",
+    "employee_visa",
+    "car_insurance",
+    "vehicle_registration",
+    "vehicle_purchase_invoice",
+    "bank_statement",
+    "salary_certificate",
+    "tax_invoice",
+    "payment_receipt",
+    "rental_contract",
+    "employment_contract",
+    "contract_agreement",
+    "noc_letter",
+    "company_profile",
+    "board_resolution",
+    "other_document",
+}
+
+
 # Map doc_type -> prompt text. Empty for now except vat
 PROMPTS = {
     "vat_certificate": VAT_CERTIFICATE_PROMPT,
@@ -180,12 +201,37 @@ Extract ONLY these fields:
 Return only JSON.
 """
 
+GENERIC_DOCUMENT_PROMPT = """
+You are a universal document metadata extractor.
+
+Extract ONLY the following fields in JSON:
+
+{
+  "generic_title": string | null,
+  "generic_document_number": string | null,
+  "generic_action_dates": [ string ] | null,
+  "generic_parties": [ string ] | null
+}
+
+Rules:
+- generic_title: the main heading or title of the document.
+- generic_document_number: any official document number, reference number, policy number, license number, contract number, etc.
+- generic_action_dates: include ALL relevant dates such as issue date, expiry date, effective date, due date, renewal date, approval date, signature date, start date, end date, payment date.
+- Preserve dates exactly as written (dd/mm/yyyy, yyyy-mm-dd, or any other valid format).
+- generic_parties: list ALL people or entities appearing in the document (companies, government bodies, signatories, insured persons, employers, landlords, etc.).
+- Do NOT infer values. Use null when not found.
+- Output ONLY JSON.
+"""
+
 
 def get_prompt(doc_type: str) -> str:
     """Return prompt for a doc type, else default."""
     prompt = PROMPTS.get(doc_type, "").strip()
 
-    if prompt:
-        return prompt
+    if doc_type in PROMPTS:
+        return PROMPTS[doc_type]
 
-    return DEFAULT_PROMPT
+    if doc_type in GENERIC_TYPES:
+        return GENERIC_DOCUMENT_PROMPT
+
+    return GENERIC_DOCUMENT_PROMPT

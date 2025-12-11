@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, ForeignKey, String, DateTime
+from sqlalchemy import Column, Integer, ForeignKey, String, DateTime, JSON, Boolean
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from ...core.database import Base
@@ -22,10 +22,17 @@ class UserDocs(Base):
 
     company_address = Column(String, nullable=True)
 
+    generic_document_number = Column(String, nullable=True)
+    generic_action_dates = Column(JSON, nullable=True)
+    generic_title = Column(String, nullable=True)
+    generic_parties = Column(JSON, nullable=True)
+
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    is_processing = Column(Boolean, nullable=False, server_default="true")
 
     user = relationship("User", back_populates="documents")
 

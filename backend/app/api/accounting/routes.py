@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 import os
 from urllib.parse import quote_plus
+from typing import List, Optional
 
 from app.core.database import get_db
 from app.api.accounting import crud
@@ -11,9 +12,10 @@ from app.api.accounting.models import AccountingConnection, ConnStatusEnum
 from .zoho_client import ZohoClient
 from .oauth_utils import ZohoOAuth
 from app.core import auth
-from app.api.users.crud import mark_zb_connected,mark_zb_disconnected
+from app.api.users.crud import mark_zb_connected, mark_zb_disconnected
 from app.core.auth import get_current_user
 from app.api.users.models import User
+from app.api.invoices import crud as invoices_crud
 
 router = APIRouter(prefix="/api/accounting", tags=["accounting"])
 
@@ -162,6 +164,7 @@ async def zoho_callback(
             )
 
         await mark_zb_connected(db, user_id)
+        await invoices_crud.reset_invoices_on_software_switch(db, user_id, "zb")
 
         return RedirectResponse(
             url=f"{FRONTEND_URL}/?zoho_connected=true&connection_id={conn.id}",
@@ -219,8 +222,46 @@ async def push_invoice(invoice_data: dict, db: AsyncSession = Depends(get_db)):
 # ------------------------------------------------------------
 # 5. PUSH MULTIPLE INVOICES
 # ------------------------------------------------------------
+async def mark_invoices_verified(
+    db: AsyncSession,
+    owner_id: int,
+    details: Optional[List[dict]],
+    chart_of_account_id: str | None = None,
+    chart_of_account_name: str | None = None,
+):
+    if not details:
+        return
+    for detail in details:
+        if detail.get("status") not in {"success", "duplicate"}:
+            continue
+        invoice_id = detail.get("invoice_id")
+        if not invoice_id:
+            continue
+        try:
+            corrected_fields = {}
+            if chart_of_account_id:
+                corrected_fields["chart_of_account_id"] = chart_of_account_id
+            if chart_of_account_name:
+                corrected_fields["chart_of_account_name"] = chart_of_account_name
+
+            await invoices_crud.update_invoice_review(
+                db,
+                invoice_id,
+                owner_id,
+                True,
+                corrected_fields if corrected_fields else None,
+            )
+            await invoices_crud.mark_invoice_as_published(db, invoice_id)
+        except Exception:
+            continue
+
+
 @router.post("/zoho/push-invoices")
-async def push_invoices(payload: dict, db: AsyncSession = Depends(get_db)):
+async def push_invoices(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Push multiple invoices to Zoho Books"""
     org_id = 1
     conn = await crud.get_connection(db, org_id)
@@ -231,12 +272,38 @@ async def push_invoices(payload: dict, db: AsyncSession = Depends(get_db)):
     conn = await ensure_valid_token(db, conn)
 
     client = ZohoClient(conn.access_token, conn.external_org_id)
-    
-    
+
+    account_id = payload.get("account_id")
+    account_name = payload.get("account_name")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="Account id is required")
+
     invoice_type = payload.get("invoice_type", "expense")
     payload["invoice_type"] = invoice_type
-    
-    return client.push_multiple_invoices(payload)
+
+    invoice_ids = [
+        inv.get("id") for inv in payload.get("invoices", []) if inv.get("id")
+    ]
+    for invoice_id in invoice_ids:
+        await invoices_crud.set_invoice_coa(
+            db,
+            invoice_id,
+            current_user.effective_user_id,
+            account_id,
+            account_name,
+        )
+
+    result = await client.push_multiple_invoices(payload, db)
+
+    await mark_invoices_verified(
+        db,
+        current_user.effective_user_id,
+        result.get("details"),
+        chart_of_account_id=account_id,
+        chart_of_account_name=account_name,
+    )
+
+    return result
 
 
 # ------------------------------------------------------------

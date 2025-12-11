@@ -46,6 +46,8 @@ class InvoiceBase(BaseModel):
     tax_note_amount: Optional[float] = None
     chart_of_account_id: Optional[str] = None
     chart_of_account_name: Optional[str] = None
+    is_paid: Optional[bool] = False
+
     
     @validator("invoice_date", pre=True)
     def _norm_invoice_date(cls, v):

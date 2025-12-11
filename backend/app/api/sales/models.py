@@ -30,6 +30,7 @@ class SalesProduct(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+
 class SalesCustomer(Base):
     __tablename__ = "sales_customers"
 
@@ -48,6 +49,7 @@ class SalesCustomer(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+
 class SalesInvoice(Base):
     __tablename__ = "sales_invoices"
 
@@ -59,7 +61,9 @@ class SalesInvoice(Base):
     company_trn = Column(String, nullable=False)
     company_address = Column(Text, nullable=True)
 
-    customer_id = Column(Integer, ForeignKey("sales_customers.id"), nullable=True)
+    customer_id = Column(
+        Integer, ForeignKey("sales_customers.id", ondelete="SET NULL"), nullable=True
+    )
     customer_name = Column(String, nullable=True)
     customer_trn = Column(String, nullable=True)
 
@@ -89,7 +93,9 @@ class SalesInvoiceLineItem(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     invoice_id = Column(Integer, ForeignKey("sales_invoices.id", ondelete="CASCADE"))
-    product_id = Column(Integer, ForeignKey("sales_products.id"), nullable=True)
+    product_id = Column(
+        Integer, ForeignKey("sales_products.id", ondelete="SET NULL"), nullable=True
+    )
     name = Column(String, nullable=True)
 
     description = Column(String, nullable=True)
@@ -102,14 +108,17 @@ class SalesInvoiceLineItem(Base):
     line_total = Column(Float, nullable=False)
 
     invoice = relationship("SalesInvoice", back_populates="line_items")
-    product = relationship("SalesProduct")
+    product = relationship("SalesProduct", passive_deletes=True)
+
 
 class SalesInventoryItem(Base):
     __tablename__ = "sales_inventory_items"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-    product_id = Column(Integer, ForeignKey("sales_products.id"), nullable=True)
+    product_id = Column(
+        Integer, ForeignKey("sales_products.id", ondelete="SET NULL"), nullable=True
+    )
     product_name = Column(String, nullable=False)
     unique_code = Column(String, nullable=False, index=True)
     cost_price = Column(Float, nullable=True)
@@ -119,7 +128,7 @@ class SalesInventoryItem(Base):
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-    product = relationship("SalesProduct")
+    product = relationship("SalesProduct", passive_deletes=True)
 
 
 class SalesTerms(Base):

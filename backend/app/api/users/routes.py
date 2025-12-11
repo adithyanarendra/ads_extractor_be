@@ -541,6 +541,38 @@ async def deactivate_user(
     return {"ok": True, "msg": f"User {user.email} deactivated (login revoked)"}
 
 
+@router.post("/accountant/reset_client")
+async def accountant_reset_client(
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        return {"ok": False, "error": "Authorization required"}
+
+    token = authorization.split(" ")[1]
+    current_user = await auth.get_current_user_from_token(token, db)
+
+    if not (
+        getattr(current_user, "jwt_is_accountant", False)
+        or current_user.is_admin
+        or current_user.is_super_admin
+    ):
+        return {"ok": False, "error": "Not authorized"}
+
+    clean_token = auth.create_access_token(
+        {
+            "sub": current_user.email,
+            "uid": current_user.id,
+            "is_admin": current_user.is_super_admin,
+            "is_accountant": current_user.is_accountant,
+            "company_id": current_user.jwt_company_id,
+            "company_role": current_user.jwt_company_role,
+        }
+    )
+
+    return {"ok": True, "access_token": clean_token}
+
+
 @router.post("/select_company")
 async def select_company(
     payload: users_schemas.SelectCompanyPayload,

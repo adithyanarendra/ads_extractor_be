@@ -70,6 +70,17 @@ def parse_range(range_str: str) -> Tuple[int, int] | dict:
         }
 
 
+@router.get("/unpaid")
+async def get_unpaid_expenses(
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    invoices = await invoices_crud.list_unpaid_expense_invoices(
+        db, current_user.effective_user_id
+    )
+    return {"ok": True, "invoices": invoices, "total_count": len(invoices)}
+
+
 @router.get("/analytics")
 async def get_invoice_analytics(
     current_user: users_models.User = Depends(get_current_user),
@@ -249,6 +260,7 @@ async def get_all_invoices_paginated(
         Invoice.owner_id == current_user.effective_user_id,
         Invoice.batch_id.is_(None),
         Invoice.type == invoice_type,
+        Invoice.is_deleted == False,
         or_(Invoice.is_published == False, Invoice.is_published.is_(None)),
     )
     total_result = await db.execute(total_stmt)
@@ -379,7 +391,6 @@ async def delete_invoice(
                 file_paths_to_remove.append(inv.file_path)
 
             if getattr(current_user, "jwt_is_super_admin", False):
-                await db.execute(update(Invoice).where(Invoice.id == inv_id).values())
                 await db.delete(inv)
                 await db.commit()
                 deleted_count += 1

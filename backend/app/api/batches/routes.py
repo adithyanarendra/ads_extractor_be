@@ -6,6 +6,7 @@ from ..invoices.routes import get_current_user
 from app.core.database import get_db
 from .schemas import BatchCreate, AddInvoicesPayload
 from . import crud
+from ..invoices import crud as invoices_crud
 from app.api.accounting import crud as accounting_crud
 from app.api.accounting.routes import ensure_valid_token
 from app.api.accounting.zoho_client import ZohoClient
@@ -218,10 +219,17 @@ async def push_batch_to_zoho(
             "account_id": inv["chart_of_account_id"],
             "invoice_type": invoice_type,
         }
-        result = client.push_multiple_invoices(payload)
+        result = await client.push_multiple_invoices(payload, db)
 
         if isinstance(result, dict) and result.get("success", 0) >= 1:
             summary["success"] += 1
+            try:
+                await invoices_crud.update_invoice_review(
+                    db, inv.get("id"), current_user.effective_user_id, True
+                )
+                await invoices_crud.mark_invoice_as_published(db, inv.get("id"))
+            except Exception:
+                pass
         else:
             summary["failed"] += 1
             msg = ""

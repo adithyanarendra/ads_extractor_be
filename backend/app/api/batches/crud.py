@@ -43,11 +43,16 @@ async def list_batches(db: AsyncSession, owner_id: int) -> Dict[str, Any]:
             all_invoices = list(b.invoices)
             for child in b.children or []:
                 all_invoices.extend(child.invoices or [])
+
+            unpublished_invoices = [
+                inv for inv in all_invoices if not getattr(inv, "is_published", False)
+            ]
             data.append(
                 {
                     "id": b.id,
                     "name": b.name,
                     "invoice_count": len(all_invoices),
+                    "invoice_count_unpublished": len(unpublished_invoices),
                     "invoice_ids": [inv.id for inv in all_invoices],
                     "parent_id": b.parent_id,
                 }
@@ -459,6 +464,9 @@ async def get_invoices_with_coas_for_batch(
     invoices = list(batch.invoices or [])
     for child in batch.children or []:
         invoices.extend(child.invoices or [])
+
+    # Only surface invoices that are not yet published (already-pushed ones stay visible in the full batch view via /batches/{id})
+    invoices = [inv for inv in invoices if not getattr(inv, "is_published", False)]
 
     data = []
     for inv in invoices:

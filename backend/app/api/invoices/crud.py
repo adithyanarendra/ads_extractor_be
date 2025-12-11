@@ -10,6 +10,7 @@ from ...utils.ocr_parser import process_invoice
 from ...core.database import SessionLocal
 from app.api.invoices.models import Invoice
 from ..suppliers import crud as suppliers_crud
+from ..users.crud import get_connection_status
 
 
 def sanitize_total(value):
@@ -54,16 +55,15 @@ async def update_invoice_after_processing(
     parsed_fields: Dict[str, Optional[str]],
     file_url: str,
 ):
-    """
-    Replace placeholder data with parsed fields and mark as done.
-    """
     stmt = select(invoices_models.Invoice).where(
         invoices_models.Invoice.id == invoice_id
     )
     result = await db.execute(stmt)
     invoice = result.scalar_one_or_none()
+
     if not invoice:
         return None
+
     invoice.file_path = file_url
     invoice.vendor_name = parsed_fields.get("vendor_name")
     invoice.invoice_number = parsed_fields.get("invoice_number")
@@ -74,11 +74,37 @@ async def update_invoice_after_processing(
     invoice.total = parsed_fields.get("total")
     invoice.remarks = parsed_fields.get("remarks")
     invoice.description = parsed_fields.get("description")
-    invoice.line_items = parsed_fields.get("line_items")
     invoice.file_hash = parsed_fields.get("file_hash")
     invoice.is_duplicate = parsed_fields.get("is_duplicate")
     invoice.is_processing = False
     invoice.extraction_status = "success"
+
+    raw_line_items = parsed_fields.get("line_items")
+
+    if (not raw_line_items or len(raw_line_items) == 0) and invoice.type == "expense":
+
+        try:
+            before_tax = float(parsed_fields.get("before_tax_amount") or 0)
+            tax_amt = float(parsed_fields.get("tax_amount") or 0)
+            tot_amt = float(parsed_fields.get("total") or 0)
+        except ValueError:
+            before_tax, tax_amt, tot_amt = 0.0, 0.0, 0.0
+
+        VAT_RATE = 0.05
+
+        default_line_item = {
+            "description": "Standard Rated Expenses",
+            "amount": f"{before_tax:.2f}",
+            "tax": f"{tax_amt:.2f}",
+            "total": f"{tot_amt:.2f}",
+            "quantity": 1,
+            "tax_rate": f"{int(VAT_RATE * 100)}%",
+        }
+
+        invoice.line_items = [default_line_item]
+    else:
+        invoice.line_items = raw_line_items
+
     if invoice.type == "expense" and invoice.vendor_name:
         supplier = await suppliers_crud.create_or_get_supplier(
             db,
@@ -271,6 +297,7 @@ async def list_invoices_by_owner(
     stmt = select(invoices_models.Invoice).where(
         invoices_models.Invoice.owner_id == owner_id,
         invoices_models.Invoice.batch_id.is_(None),
+        invoices_models.Invoice.is_deleted == False,
         or_(Invoice.is_published == False, Invoice.is_published.is_(None)),
     )
 
@@ -323,6 +350,7 @@ async def list_invoices_to_review_by_owner(db: AsyncSession, owner_id: int):
         invoices_models.Invoice.owner_id == owner_id,
         invoices_models.Invoice.reviewed == False,
         invoices_models.Invoice.extraction_status == "success",
+        Invoice.is_deleted == False,
     )
     result = await db.execute(stmt)
     return [{"id": row.id, "file_path": row.file_path} for row in result.all()]
@@ -356,6 +384,7 @@ async def update_invoice_review(
             "tax_note_amount",
             "chart_of_account_id",
             "chart_of_account_name",
+            "is_paid",
         }
         for k, v in corrected_fields.items():
             if k in allowed:
@@ -375,10 +404,30 @@ async def update_invoice_review(
 
         if "chart_of_account_name" in corrected_fields:
             invoice.chart_of_account_name = corrected_fields["chart_of_account_name"]
-
+        qb_connected = await get_connection_status(db, owner_id, "is_qb_connected")
+        invoice.accounting_software = "qb" if qb_connected else "zb"
     await db.commit()
     await db.refresh(invoice)
     return invoice
+
+
+async def set_invoice_coa(
+    db: AsyncSession,
+    invoice_id: int,
+    owner_id: int,
+    chart_of_account_id: str,
+    chart_of_account_name: Optional[str] = None,
+):
+    invoice = await get_invoice_by_id_and_owner(db, invoice_id, owner_id)
+    if not invoice:
+        return False
+
+    invoice.chart_of_account_id = chart_of_account_id
+    invoice.chart_of_account_name = chart_of_account_name
+    invoice.accounting_software = "zb"
+    await db.commit()
+    await db.refresh(invoice)
+    return True
 
 
 async def edit_invoice(
@@ -407,6 +456,7 @@ async def edit_invoice(
         "tax_note_amount",
         "chart_of_account_id",
         "chart_of_account_name",
+        "is_paid",
     }
     for k, v in corrected_fields.items():
         if k in allowed:
@@ -479,6 +529,7 @@ async def run_invoice_extraction(
     """
     async with SessionLocal() as db:
         try:
+            print("processing invoice")
             parsed_fields = await asyncio.get_event_loop().run_in_executor(
                 None, process_invoice, content, ext, invoice_type
             )
@@ -501,7 +552,7 @@ async def run_invoice_extraction(
                 await mark_invoice_failed(db, invoice_id, file_url)
                 print(f"⚠️ Invoice {invoice_id} extraction failed — all fields empty.")
                 return
-
+            print("calling update invoice function")
             await update_invoice_after_processing(
                 db, invoice_id, parsed_fields, file_url
             )
@@ -521,6 +572,7 @@ async def get_invoice_analytics(db: AsyncSession, owner_id: int):
         invoices_models.Invoice.type,
         invoices_models.Invoice.total,
         invoices_models.Invoice.vendor_name,
+        Invoice.is_deleted == False,
     ).where(invoices_models.Invoice.owner_id == owner_id)
     result = await db.execute(invoices_query)
     invoices = result.all()
@@ -582,7 +634,7 @@ async def update_invoice_qb_id(db: AsyncSession, invoice_id: int, qb_id: str):
     stmt = (
         update(Invoice)
         .where(Invoice.id == invoice_id)
-        .values(qb_id=qb_id, is_published=True)
+        .values(qb_id=qb_id, is_published=True, accounting_software="qb")
         .execution_options(synchronize_session=False)
     )
     await db.execute(stmt)
@@ -604,6 +656,7 @@ async def list_invoices_by_company(
         invoices_models.Invoice.company_id == company_id,
         invoices_models.Invoice.batch_id.is_(None),
         invoices_models.Invoice.is_published == False,
+        Invoice.is_deleted == False,
     )
 
     if invoice_type:
@@ -688,3 +741,55 @@ async def soft_delete_invoice(
     await db.commit()
     await db.refresh(invoice)
     return True
+
+
+async def reset_invoices_on_software_switch(
+    db: AsyncSession, user_id: int, connected_software: str
+):
+    """
+    Reset all invoices for the user that belong to the OTHER accounting software.
+    """
+
+    if connected_software not in {"qb", "zb"}:
+        raise ValueError("connected_software must be 'qb' or 'zb'")
+
+    stmt = (
+        update(Invoice)
+        .where(
+            Invoice.owner_id == user_id,
+            Invoice.is_published == False,
+            or_(
+                Invoice.accounting_software.is_(None),
+                Invoice.accounting_software != connected_software,
+            ),
+        )
+        .values(
+            accounting_software=None,
+            chart_of_account_id=None,
+            chart_of_account_name=None,
+        )
+        .execution_options(synchronize_session="fetch")
+    )
+
+    await db.execute(stmt)
+    await db.commit()
+
+    return True
+
+
+async def list_unpaid_expense_invoices(db: AsyncSession, owner_id: int):
+    Invoice = invoices_models.Invoice
+
+    stmt = (
+        select(Invoice)
+        .where(
+            Invoice.owner_id == owner_id,
+            Invoice.type == "expense",
+            Invoice.is_deleted == False,
+            Invoice.is_paid == False,
+        )
+        .order_by(desc(Invoice.created_at))
+    )
+
+    result = await db.execute(stmt)
+    return result.scalars().all()

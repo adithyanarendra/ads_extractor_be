@@ -182,7 +182,7 @@ def compute_line_item_totals(items):
         enriched.append(
             {
                 "product_id": item.product_id,
-                "name": item.name or item.description,
+                "name": item.name,
                 "description": item.description,
                 "quantity": item.quantity,
                 "unit_cost": item.unit_cost,

@@ -1,10 +1,14 @@
 from sqlalchemy import select, func, cast, Numeric
 from sqlalchemy.orm import selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from .models import Report
 from ..invoices.models import Invoice
 from ..user_docs.models import UserDocs
+from ..sales.models import SalesInvoice
 from ..batches import models as batch_models
 
 
@@ -14,6 +18,28 @@ def _to_decimal(value):
         return Decimal(str(value or "0").replace(",", "").strip())
     except (InvalidOperation, TypeError, ValueError):
         return Decimal("0")
+
+
+def _parse_date(d: str):
+    try:
+        return datetime.strptime(d, "%Y-%m-%d")
+    except:
+        return None
+
+
+def _safe_float(v):
+    try:
+        return float(str(v).replace(",", "").strip())
+    except:
+        return 0.0
+
+
+def _to_date_from_uploaded_format(date_str: str):
+    """Uploaded invoices store invoice_date as DD-MM-YYYY string."""
+    try:
+        return datetime.strptime(date_str, "%d-%m-%Y")
+    except:
+        return None
 
 
 async def get_vat_summary(db, user_id: int):
@@ -343,3 +369,134 @@ async def get_report(db, report_id: int, user_id: int):
         select(Report).where(Report.id == report_id, Report.user_id == user_id)
     )
     return q.scalar_one_or_none()
+
+
+async def generate_pnl_report(
+    db: AsyncSession, user_id: int, start_date: str, end_date: str
+):
+    start_dt = _parse_date(start_date)
+    end_dt = _parse_date(end_date)
+
+    if not start_dt or not end_dt:
+        return {
+            "ok": False,
+            "message": "Invalid date format. Expected YYYY-MM-DD",
+            "error": "INVALID_DATES",
+            "data": None,
+        }
+
+    start_date_only = start_dt.date()
+    end_date_only = end_dt.date()
+
+    q = await db.execute(
+        select(
+            UserDocs.vat_legal_name_english,
+            UserDocs.vat_legal_name_arabic,
+            UserDocs.vat_tax_registration_number,
+        ).where(
+            UserDocs.user_id == user_id,
+            UserDocs.vat_tax_registration_number.isnot(None),
+        )
+    )
+    doc = q.fetchone()
+
+    if not doc:
+        return {
+            "ok": False,
+            "message": "VAT certificate not found for this user",
+            "error": "VAT_CERTIFICATE_MISSING",
+            "data": None,
+        }
+
+    company_details = {
+        "vat_legal_name_english": doc.vat_legal_name_english,
+        "vat_legal_name_arabic": doc.vat_legal_name_arabic,
+        "vat_tax_registration_number": doc.vat_tax_registration_number,
+    }
+
+    inv_q = await db.execute(
+        select(
+            Invoice.invoice_number,
+            Invoice.invoice_date,
+            Invoice.vendor_name,
+            Invoice.trn_vat_number,
+            Invoice.before_tax_amount,
+            Invoice.tax_amount,
+            Invoice.total,
+            Invoice.type,
+            Invoice.remarks,
+        ).where(
+            Invoice.owner_id == user_id,
+            Invoice.reviewed == True,
+        )
+    )
+
+    all_uploaded = inv_q.mappings().all()
+    filtered_uploaded = []
+
+    for inv in all_uploaded:
+        dt = _to_date_from_uploaded_format(inv["invoice_date"])
+        if not dt:
+            continue
+
+        dt = dt.date()
+
+        if start_date_only <= dt <= end_date_only:
+            filtered_uploaded.append(inv)
+
+    uploaded_sales = [i for i in filtered_uploaded if i["type"] == "sales"]
+    uploaded_expenses = [i for i in filtered_uploaded if i["type"] == "expense"]
+
+    sales_q = await db.execute(
+        select(
+            SalesInvoice.invoice_number,
+            SalesInvoice.invoice_date,
+            SalesInvoice.customer_name,
+            SalesInvoice.customer_trn,
+            SalesInvoice.total,
+            SalesInvoice.notes,
+            SalesInvoice.is_deleted,
+        ).where(
+            SalesInvoice.owner_id == user_id,
+            SalesInvoice.is_deleted == False,
+        )
+    )
+    all_generated = sales_q.mappings().all()
+
+    generated_sales = []
+
+    for s in all_generated:
+        dt = s.get("invoice_date")
+        if not dt:
+            continue
+
+        try:
+            dt_date = dt.date()
+        except:
+            continue
+
+        if start_date_only <= dt_date <= end_date_only:
+            generated_sales.append(s)
+
+    total_sales_uploaded = sum(_safe_float(i["total"]) for i in uploaded_sales)
+    total_sales_generated = sum(_safe_float(i["total"]) for i in generated_sales)
+    total_expenses = sum(_safe_float(i["total"]) for i in uploaded_expenses)
+
+    total_sales = total_sales_uploaded + total_sales_generated
+    net_profit = total_sales - total_expenses
+
+    return {
+        "ok": True,
+        "message": "P&L Summary generated",
+        "error": None,
+        "data": {
+            "isPnl": True,
+            "company_details": company_details,
+            "period": {"start_date": start_date, "end_date": end_date},
+            "sales_count": len(uploaded_sales) + len(generated_sales),
+            "sales_total": total_sales,
+            "expenses_count": len(uploaded_expenses),
+            "expenses_total": total_expenses,
+            "net_profit": net_profit,
+        },
+    }

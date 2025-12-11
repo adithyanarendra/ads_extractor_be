@@ -5,14 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.database import get_db
 from ..invoices.routes import get_current_user
-from .crud import (
-    get_vat_summary,
-    get_all_reports,
-    get_report,
-    create_report,
-    get_vat_summary_by_batch,
-)
+from . import crud as reports_crud
+
 from ...utils.r2 import upload_to_r2_bytes, get_file_from_r2
+
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -21,11 +17,27 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 async def vat_summary(
     db: AsyncSession = Depends(get_db), current_user: int = Depends(get_current_user)
 ):
-    result = await get_vat_summary(db, current_user.effective_user_id)
+    result = await reports_crud.get_vat_summary(db, current_user.effective_user_id)
 
     if not result["ok"]:
         return {**result, "http_status": status.HTTP_400_BAD_REQUEST}
 
+    return result
+
+
+@router.get("/generate/pnl")
+async def generate_pnl(
+    start_date: str,
+    end_date: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    result = await reports_crud.generate_pnl_report(
+        db,
+        current_user.effective_user_id,
+        start_date,
+        end_date,
+    )
     return result
 
 
@@ -35,7 +47,7 @@ async def vat_summary_by_batch(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    result = await get_vat_summary_by_batch(
+    result = await reports_crud.get_vat_summary_by_batch(
         db, current_user.effective_user_id, batch_id
     )
     return result
@@ -45,7 +57,7 @@ async def vat_summary_by_batch(
 async def list_reports(
     db: AsyncSession = Depends(get_db), current_user=Depends(get_current_user)
 ):
-    reports = await get_all_reports(db, current_user.effective_user_id)
+    reports = await reports_crud.get_all_reports(db, current_user.effective_user_id)
 
     return {
         "ok": True,
@@ -76,7 +88,7 @@ async def upload_report(
 
         file_url = upload_to_r2_bytes(content, filename)
 
-        result = await create_report(
+        result = await reports_crud.create_report(
             db,
             user_id=current_user.effective_user_id,
             report_name=file.filename,
@@ -100,7 +112,9 @@ async def view_report(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    report = await get_report(db, report_id, current_user.effective_user_id)
+    report = await reports_crud.get_report(
+        db, report_id, current_user.effective_user_id
+    )
 
     if not report:
         return {
