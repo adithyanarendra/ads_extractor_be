@@ -269,6 +269,35 @@ async def get_all_invoices_paginated(
     return {"ok": True, "invoices": invoices, "total_count": total_count}
 
 
+@router.get("/export_all/{invoice_type}")
+async def export_all_invoices(
+    invoice_type: str,
+    search: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if invoice_type not in {"expense", "sales"}:
+        return {"ok": False, "message": "Invalid invoice type"}
+
+    invoices = await invoices_crud.list_invoices_by_owner(
+        db=db,
+        owner_id=current_user.effective_user_id,
+        invoice_type=invoice_type,
+        search=search,
+        from_date=from_date,
+        to_date=to_date,
+        ignore_pagination=True,
+    )
+
+    return {
+        "ok": True,
+        "invoices": invoices,
+        "total_count": len(invoices),
+    }
+
+
 @router.get("/to_be_reviewed", response_model=invoices_schemas.InvoiceTBRListResponse)
 async def to_be_reviewed(
     current_user: users_models.User = Depends(get_current_user),

@@ -8,7 +8,9 @@ from datetime import datetime
 import httpx
 from fastapi import APIRouter, Request, HTTPException, Depends, Header
 from fastapi.responses import RedirectResponse, JSONResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.api.invoices.models import Invoice
 from intuitlib.enums import Scopes
 from app.core import auth
 from app.core.database import get_db
@@ -364,6 +366,66 @@ async def push_bill_to_quickbooks(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/push-multiple-invoices")
+async def push_multiple_invoices(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    invoice_ids: list[int] = body.get("invoice_ids")
+
+    if not invoice_ids or not isinstance(invoice_ids, list):
+        raise HTTPException(status_code=400, detail="invoice_ids must be a valid list")
+
+    access_token, realm_id = await get_valid_access_token(db)
+    if not access_token or not realm_id:
+        raise HTTPException(status_code=401, detail="QuickBooks not connected")
+
+    success = []
+    failed = []
+    missing_coa = []
+
+    for inv_id in invoice_ids:
+        try:
+            result = await db.execute(
+                select(Invoice).where(Invoice.id == inv_id)
+            )
+            invoice_obj = result.scalar_one_or_none()
+
+            if not invoice_obj:
+                failed.append({"invoice_id": inv_id, "error": "Invoice not found"})
+                continue
+
+            if not invoice_obj.chart_of_account_id:
+                missing_coa.append(inv_id)
+                continue
+
+            qb_bill_id = await push_single_invoice_core(
+                db,
+                inv_id,
+                invoice_obj.chart_of_account_id,
+                access_token,
+                realm_id
+            )
+
+            success.append({"invoice_id": inv_id, "qb_bill_id": qb_bill_id})
+
+        except ValueError as e:
+            failed.append({"invoice_id": inv_id, "error": str(e)})
+        except Exception as e:
+            failed.append({"invoice_id": inv_id, "error": str(e)})
+
+    return {
+        "success": success,
+        "failed": failed,
+        "missing_coa": missing_coa,
+        "summary": {
+            "total": len(invoice_ids),
+            "pushed": len(success),
+            "failed": len(failed),
+            "missing_coa": len(missing_coa)
+        }
+    }
 
 @router.post("/push-batch/{batch_id}")
 async def push_batch_to_quickbooks(
