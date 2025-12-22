@@ -8,7 +8,7 @@ from decimal import Decimal, InvalidOperation
 from .models import Report
 from ..invoices.models import Invoice
 from ..user_docs.models import UserDocs
-from ..sales.models import SalesInvoice
+from ..sales.models import SalesInvoice, SalesTaxCreditNote
 from ..batches import models as batch_models
 
 
@@ -88,8 +88,71 @@ async def get_vat_summary(db, user_id: int):
 
         invoices = (await db.execute(invoice_query)).mappings().all()
 
-        sales_invoices = [i for i in invoices if i["type"] == "sales"]
+        uploaded_sales = [i for i in invoices if i["type"] == "sales"]
         expense_invoices = [i for i in invoices if i["type"] == "expense"]
+
+        gen_sales_q = await db.execute(
+            select(
+                SalesInvoice.invoice_number,
+                SalesInvoice.invoice_date,
+                SalesInvoice.customer_name,
+                SalesInvoice.customer_trn,
+                SalesInvoice.subtotal,
+                SalesInvoice.total_vat,
+                SalesInvoice.total,
+                SalesInvoice.notes,
+            ).where(
+                SalesInvoice.owner_id == user_id,
+                SalesInvoice.is_deleted == False,
+            )
+        )
+        generated_sales_rows = gen_sales_q.mappings().all()
+        generated_sales = [
+            {
+                "invoice_number": r["invoice_number"],
+                "invoice_date": r["invoice_date"],
+                "vendor_name": r["customer_name"],
+                "trn_vat_number": r["customer_trn"],
+                "before_tax_amount": str(r["subtotal"] or 0),
+                "tax_amount": str(r["total_vat"] or 0),
+                "total": str(r["total"] or 0),
+                "remarks": r["notes"],
+                "type": "sales",
+            }
+            for r in generated_sales_rows
+        ]
+
+        cn_q = await db.execute(
+            select(
+                SalesTaxCreditNote.credit_note_number,
+                SalesTaxCreditNote.credit_note_date,
+                SalesTaxCreditNote.customer_name,
+                SalesTaxCreditNote.customer_trn,
+                SalesTaxCreditNote.subtotal,
+                SalesTaxCreditNote.total_vat,
+                SalesTaxCreditNote.total,
+                SalesTaxCreditNote.notes,
+                SalesTaxCreditNote.reference_invoice_id,
+            ).where(SalesTaxCreditNote.owner_id == user_id)
+        )
+        credit_note_rows = cn_q.mappings().all()
+        credit_notes_as_sales = [
+            {
+                "invoice_number": r["credit_note_number"],
+                "invoice_date": r["credit_note_date"],
+                "vendor_name": r["customer_name"],
+                "trn_vat_number": r["customer_trn"],
+                "before_tax_amount": str(r["subtotal"] or 0),
+                "tax_amount": str(r["total_vat"] or 0),
+                "total": str(r["total"] or 0),
+                "remarks": r["notes"]
+                or f"Credit note against invoice {r['reference_invoice_id']}",
+                "type": "sales",
+            }
+            for r in credit_note_rows
+        ]
+
+        sales_invoices = uploaded_sales + generated_sales + credit_notes_as_sales
 
         # ---- VAT Calculations ----
         tax_sum_query = await db.execute(
@@ -105,9 +168,24 @@ async def get_vat_summary(db, user_id: int):
         total_vat_input = (
             sum([t.tax_sum for t in tax_totals if t.type == "expense"]) or 0
         )
-        total_vat_output = (
-            sum([t.tax_sum for t in tax_totals if t.type == "sales"]) or 0
+        uploaded_vat_output = sum([t.tax_sum for t in tax_totals if t.type == "sales"]) or 0
+
+        generated_vat_output_q = await db.execute(
+            select(func.sum(SalesInvoice.total_vat)).where(
+                SalesInvoice.owner_id == user_id,
+                SalesInvoice.is_deleted == False,
+            )
         )
+        generated_vat_output = generated_vat_output_q.scalar() or 0
+
+        credit_vat_output_q = await db.execute(
+            select(func.sum(SalesTaxCreditNote.total_vat)).where(
+                SalesTaxCreditNote.owner_id == user_id
+            )
+        )
+        credit_vat_output = credit_vat_output_q.scalar() or 0
+
+        total_vat_output = uploaded_vat_output + generated_vat_output + credit_vat_output
         total_vat_to_pay = total_vat_output - total_vat_input
 
         std_totals_query = await db.execute(
@@ -123,9 +201,24 @@ async def get_vat_summary(db, user_id: int):
         standard_rated_expense = (
             sum([s.std_total for s in std_totals if s.type == "expense"]) or 0
         )
-        standard_rated_sales = (
-            sum([s.std_total for s in std_totals if s.type == "sales"]) or 0
+        uploaded_standard_sales = sum([s.std_total for s in std_totals if s.type == "sales"]) or 0
+
+        generated_standard_sales_q = await db.execute(
+            select(func.sum(SalesInvoice.subtotal)).where(
+                SalesInvoice.owner_id == user_id,
+                SalesInvoice.is_deleted == False,
+            )
         )
+        generated_standard_sales = generated_standard_sales_q.scalar() or 0
+
+        credit_standard_sales_q = await db.execute(
+            select(func.sum(SalesTaxCreditNote.subtotal)).where(
+                SalesTaxCreditNote.owner_id == user_id
+            )
+        )
+        credit_standard_sales = credit_standard_sales_q.scalar() or 0
+
+        standard_rated_sales = uploaded_standard_sales + generated_standard_sales + credit_standard_sales
 
         return {
             "ok": True,
@@ -224,6 +317,7 @@ async def get_vat_summary_by_batch(db, user_id: int, batch_id: int):
             Invoice.total,
             Invoice.remarks,
             Invoice.type,
+            Invoice.source_sales_invoice_id,
             Invoice.has_tax_note,
             Invoice.tax_note_type,
             Invoice.tax_note_amount,
@@ -235,6 +329,58 @@ async def get_vat_summary_by_batch(db, user_id: int, batch_id: int):
         result = await db.execute(invoice_query)
 
         invoices = (await db.execute(invoice_query)).mappings().all()
+
+        # Include sales credit notes that reference generated sales invoices in this batch.
+        sales_source_ids = [
+            i.get("source_sales_invoice_id")
+            for i in invoices
+            if i.get("type") == "sales" and i.get("source_sales_invoice_id") is not None
+        ]
+
+        if sales_source_ids:
+            cn_q = await db.execute(
+                select(
+                    SalesTaxCreditNote.credit_note_number,
+                    SalesTaxCreditNote.credit_note_date,
+                    SalesTaxCreditNote.customer_name,
+                    SalesTaxCreditNote.customer_trn,
+                    SalesTaxCreditNote.subtotal,
+                    SalesTaxCreditNote.total_vat,
+                    SalesTaxCreditNote.total,
+                    SalesTaxCreditNote.notes,
+                    SalesTaxCreditNote.reference_invoice_id,
+                ).where(
+                    SalesTaxCreditNote.owner_id == user_id,
+                    SalesTaxCreditNote.reference_invoice_id.in_(sales_source_ids),
+                )
+            )
+            credit_note_rows = cn_q.mappings().all()
+
+            credit_notes_as_sales = [
+                {
+                    "invoice_number": r["credit_note_number"],
+                    "invoice_date": (
+                        r["credit_note_date"].strftime("%d-%m-%Y")
+                        if r["credit_note_date"]
+                        else None
+                    ),
+                    "vendor_name": r["customer_name"],
+                    "trn_vat_number": r["customer_trn"],
+                    "before_tax_amount": str(r["subtotal"] or 0),
+                    "tax_amount": str(r["total_vat"] or 0),
+                    "total": str(r["total"] or 0),
+                    "remarks": r["notes"]
+                    or f"Sales credit note against sales invoice {r['reference_invoice_id']}",
+                    "type": "sales",
+                    "source_sales_invoice_id": None,
+                    "has_tax_note": False,
+                    "tax_note_type": None,
+                    "tax_note_amount": None,
+                }
+                for r in credit_note_rows
+            ]
+
+            invoices = invoices + credit_notes_as_sales
 
         if not invoices:
             return {
@@ -478,11 +624,37 @@ async def generate_pnl_report(
         if start_date_only <= dt_date <= end_date_only:
             generated_sales.append(s)
 
+    credit_q = await db.execute(
+        select(
+            SalesTaxCreditNote.credit_note_number,
+            SalesTaxCreditNote.credit_note_date,
+            SalesTaxCreditNote.customer_name,
+            SalesTaxCreditNote.customer_trn,
+            SalesTaxCreditNote.total,
+            SalesTaxCreditNote.notes,
+            SalesTaxCreditNote.reference_invoice_id,
+        ).where(SalesTaxCreditNote.owner_id == user_id)
+    )
+    all_credit_notes = credit_q.mappings().all()
+
+    credit_notes = []
+    for n in all_credit_notes:
+        dt = n.get("credit_note_date")
+        if not dt:
+            continue
+        try:
+            dt_date = dt.date()
+        except:
+            continue
+        if start_date_only <= dt_date <= end_date_only:
+            credit_notes.append(n)
+
     total_sales_uploaded = sum(_safe_float(i["total"]) for i in uploaded_sales)
     total_sales_generated = sum(_safe_float(i["total"]) for i in generated_sales)
+    total_credit_notes = sum(_safe_float(i["total"]) for i in credit_notes)
     total_expenses = sum(_safe_float(i["total"]) for i in uploaded_expenses)
 
-    total_sales = total_sales_uploaded + total_sales_generated
+    total_sales = total_sales_uploaded + total_sales_generated + total_credit_notes
     net_profit = total_sales - total_expenses
 
     return {
@@ -493,7 +665,7 @@ async def generate_pnl_report(
             "isPnl": True,
             "company_details": company_details,
             "period": {"start_date": start_date, "end_date": end_date},
-            "sales_count": len(uploaded_sales) + len(generated_sales),
+            "sales_count": len(uploaded_sales) + len(generated_sales) + len(credit_notes),
             "sales_total": total_sales,
             "expenses_count": len(uploaded_expenses),
             "expenses_total": total_expenses,

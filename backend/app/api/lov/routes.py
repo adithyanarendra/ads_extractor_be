@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.api.companies.models import Company
 from .enums import BatchType
+from app.api.lov.currency import CurrencyEnum
 
 router = APIRouter(prefix="/lovs", tags=["LOV"])
 
@@ -21,3 +22,16 @@ def get_companies(db: Session = Depends(get_db)):
     """
     companies = db.query(Company).all()
     return [{"id": company.id, "label": company.name} for company in companies]
+
+@router.get("/currencies")
+def get_currencies():
+    """
+    Returns a list of supported currencies for dropdown
+    """
+    return [
+        {
+            "id": currency.name,      
+            "label": currency.value  
+        }
+        for currency in CurrencyEnum
+    ]

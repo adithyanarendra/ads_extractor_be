@@ -1,17 +1,22 @@
-from fastapi import APIRouter, Depends, Header, Body
+from fastapi import APIRouter, Depends, Header, Body, HTTPException, Query
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Optional
-import asyncio
 from ...core import auth
-from . import schemas as users_schemas
 from . import crud
 from . import models as users_models
 from ...core.database import get_db
 from ..companies import crud as companies_crud
 from ..companies.models import CompanyUser
+from . import schemas as users_schemas
+from app.core.auth import get_current_user
+from ..invoices.models import Invoice
+from ..user_docs.models import UserDocs
+
+from sqlalchemy import func, or_
+
 
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -73,6 +78,10 @@ async def login(user: users_schemas.UserLogin, db: AsyncSession = Depends(get_db
     db_user = await crud.authenticate_user(db, user.email, user.password)
     if not db_user:
         return {"ok": False, "error": "Invalid credentials"}
+    
+    db_user.last_login_at = func.now()
+    await db.commit()
+    await db.refresh(db_user)
 
     is_super_admin = db_user.is_admin or db_user.is_super_admin
 
@@ -202,7 +211,7 @@ async def accountant_list_users(
         return {"ok": False, "error": "Not authorized"}
 
     users = await crud.list_all_users(db)
-    out = [{"id": u.id, "name": u.name or u.email, "email": u.email} for u in users]
+    out = [{"id": u.id, "name": u.name or u.email, "email": u.email} for u in users if (not u.is_admin and not u.is_accountant)]
     return {"ok": True, "users": out}
 
 
@@ -572,7 +581,6 @@ async def accountant_reset_client(
 
     return {"ok": True, "access_token": clean_token}
 
-
 @router.post("/select_company")
 async def select_company(
     payload: users_schemas.SelectCompanyPayload,
@@ -613,4 +621,130 @@ async def select_company(
         "token_type": "bearer",
         "company_id": payload.company_id,
         "company_role": role,
+    }
+
+@router.get("/info")
+async def get_user_info(
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization required")
+
+    token = authorization.split(" ")[1]
+    user = await auth.get_current_user_from_token(token, db)
+
+    return {
+        "ok": True,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "currency": user.currency,  
+        },
+    }
+
+@router.get("/user_currency")
+async def get_user_currency(
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization required")
+
+    token = authorization.split(" ")[1]
+    user = await auth.get_current_user_from_token(token, db)
+
+    return {
+        "currency": user.currency
+    }
+
+@router.get("/clients")
+async def list_clients_for_accountant(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+
+    q: Optional[str] = Query(None, description="Search by name or email"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+):
+    if not getattr(current_user, "jwt_is_accountant", False):
+        raise HTTPException(status_code=403, detail="Accountant access only")
+
+    offset = (page - 1) * page_size
+
+    filters = [
+        users_models.User.is_admin == False,
+        users_models.User.is_accountant == False,
+    ]
+
+    if q:
+        search = f"%{q.lower()}%"
+        filters.append(
+            or_(
+                func.lower(users_models.User.email).like(search),
+                func.lower(users_models.User.name).like(search),
+            )
+        )
+
+    total_result = await db.execute(
+        select(func.count(users_models.User.id)).where(*filters)
+    )
+    total = total_result.scalar() or 0
+
+    result = await db.execute(
+        select(users_models.User)
+        .where(*filters)
+        .order_by(users_models.User.id.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+
+    users = result.scalars().all()
+    clients = []
+
+    for user in users:
+        expense_count = await db.scalar(
+            select(func.count(Invoice.id)).where(
+                Invoice.owner_id == user.id,
+                Invoice.type == "expense",
+                Invoice.is_deleted == False,
+            )
+        )
+
+        sales_count = await db.scalar(
+            select(func.count(Invoice.id)).where(
+                Invoice.owner_id == user.id,
+                Invoice.type == "sales",
+                Invoice.is_deleted == False,
+            )
+        )
+
+        doc_count = await db.scalar(
+            select(func.count(UserDocs.id)).where(
+                UserDocs.user_id == user.id
+            )
+        )
+
+        clients.append(
+            {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "expense_count": expense_count or 0,
+                "sales_count": sales_count or 0,
+                "doc_count": doc_count or 0,
+                "last_login": None,
+                "qb_connected": bool(user.is_qb_connected),
+                "zb_connected": bool(user.is_zb_connected),
+            }
+        )
+
+    return {
+        "ok": True,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": (total + page_size - 1) // page_size,
+        "clients": clients,
     }

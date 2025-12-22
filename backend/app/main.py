@@ -35,6 +35,7 @@ from .api.statements.routes import router as statements_router
 from .api.accounting.routes import router as accounting_router
 from .api.sales.routes import router as sales_invoices_router
 from .api.suppliers.routes import router as suppliers_router
+from .api.payments.routes import router as payments_router
 
 
 app = FastAPI(title="FastAPI Invoice OCR")
@@ -45,9 +46,10 @@ origins = [
     "http://127.0.0.1:5173",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://ads-extractor-fe.onrender.com",
     "https://aicountant.tech",
     "49.43.169.79",
+    # NGROK - payment testing - to be removed later
+    "https://embrasured-tristian-draughtiest.ngrok-free.dev",
 ]
 
 app.add_middleware(
@@ -70,6 +72,7 @@ app.include_router(statements_router)
 app.include_router(accounting_router)
 app.include_router(sales_invoices_router)
 app.include_router(suppliers_router)
+app.include_router(payments_router)
 
 
 @app.get("/")

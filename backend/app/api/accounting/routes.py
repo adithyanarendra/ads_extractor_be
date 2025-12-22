@@ -19,7 +19,10 @@ from app.api.invoices import crud as invoices_crud
 
 router = APIRouter(prefix="/api/accounting", tags=["accounting"])
 
-oauth = ZohoOAuth()
+
+def get_oauth():
+    """Lazy-load oauth to ensure env vars are loaded first"""
+    return ZohoOAuth()
 
 # Frontend URL - read from environment, default to localhost:5173 for development
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
@@ -50,7 +53,7 @@ async def ensure_valid_token(db: AsyncSession, conn: AccountingConnection):
     now = datetime.now(timezone.utc)
     if conn.expires_at and conn.expires_at > now:
         return conn  
-
+    oauth = get_oauth()
     token_response = oauth.refresh_access_token(
         refresh_token=conn.refresh_token,
         dc_domain=conn.dc_domain
@@ -80,6 +83,7 @@ async def ensure_valid_token(db: AsyncSession, conn: AccountingConnection):
 @router.get("/zoho/connect")
 async def connect_zoho(state: str | None = None):
     """Redirect user to Zoho OAuth authorization page."""
+    oauth = get_oauth()  # Create fresh instance each time
     auth_url = oauth.get_auth_url(state=state)
     return RedirectResponse(url=auth_url)
 
@@ -127,7 +131,7 @@ async def zoho_callback(
                 url=f"{FRONTEND_URL}/?zoho_error=Missing+accounts-server",
                 status_code=302
             )
-
+        oauth = get_oauth()
         token_response = await oauth.exchange_code_for_token(
             code=code,
             dc_domain=dc_domain
@@ -275,23 +279,73 @@ async def push_invoices(
 
     account_id = payload.get("account_id")
     account_name = payload.get("account_name")
-    if not account_id:
-        raise HTTPException(status_code=400, detail="Account id is required")
-
     invoice_type = payload.get("invoice_type", "expense")
     payload["invoice_type"] = invoice_type
 
     invoice_ids = [
         inv.get("id") for inv in payload.get("invoices", []) if inv.get("id")
     ]
-    for invoice_id in invoice_ids:
-        await invoices_crud.set_invoice_coa(
-            db,
-            invoice_id,
-            current_user.effective_user_id,
-            account_id,
-            account_name,
+
+    if not invoice_ids:
+        raise HTTPException(status_code=400, detail="No invoices selected")
+
+    invoices_from_db = await invoices_crud.get_invoices_by_ids_and_owner(
+        db, invoice_ids, current_user.effective_user_id
+    )
+    invoice_map = {inv.id: inv for inv in invoices_from_db}
+
+    if len(invoice_map) != len(invoice_ids):
+        missing_ids = [i for i in invoice_ids if i not in invoice_map]
+        raise HTTPException(
+            status_code=404,
+            detail=f"Invoices not found or not owned by user: {missing_ids}",
         )
+
+    not_verified = [inv.id for inv in invoices_from_db if not inv.reviewed]
+    if not_verified:
+        raise HTTPException(
+            status_code=400,
+            detail="Only verified invoices can be pushed",
+        )
+
+    if account_id:
+        for invoice_id in invoice_ids:
+            await invoices_crud.set_invoice_coa(
+                db,
+                invoice_id,
+                current_user.effective_user_id,
+                account_id,
+                account_name,
+            )
+    else:
+        missing_coa = [
+            inv.id
+            for inv in invoices_from_db
+            if not inv.chart_of_account_id
+        ]
+        if missing_coa:
+            raise HTTPException(
+                status_code=400,
+                detail="Selected invoices are missing Chart of Account. Please update and try again.",
+            )
+
+        enriched_invoices = []
+        payload_invoices = payload.get("invoices", [])
+        for invoice in payload_invoices:
+            inv_id = invoice.get("id")
+            if not inv_id:
+                continue
+            db_inv = invoice_map.get(inv_id)
+            if not db_inv:
+                continue
+            enriched_invoices.append(
+                {
+                    **invoice,
+                    "account_id": db_inv.chart_of_account_id,
+                    "account_name": db_inv.chart_of_account_name,
+                }
+            )
+        payload["invoices"] = enriched_invoices
 
     result = await client.push_multiple_invoices(payload, db)
 
@@ -304,7 +358,6 @@ async def push_invoices(
     )
 
     return result
-
 
 # ------------------------------------------------------------
 # 6. STATUS

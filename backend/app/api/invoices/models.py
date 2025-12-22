@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from ...core.database import Base
 
+
 class Invoice(Base):
     __tablename__ = "invoices"
 
@@ -39,7 +40,6 @@ class Invoice(Base):
     is_published = Column(Boolean, default=False, nullable=False)
     accounting_software = Column(String(10), nullable=False, default="none")
 
-
     qb_id = Column(Integer, nullable=True)
     chart_of_account_id = Column(String, nullable=True)
     chart_of_account_name = Column(String, nullable=True)
@@ -56,3 +56,9 @@ class Invoice(Base):
         foreign_keys=[owner_id],
     )
     company = relationship("Company", backref="invoices")
+    source_sales_invoice_id = Column(
+        Integer,
+        ForeignKey("sales_invoices.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )

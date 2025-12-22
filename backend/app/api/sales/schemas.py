@@ -1,19 +1,19 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Union
 from datetime import datetime
 
 
 class ProductCreate(BaseModel):
     name: str
     unique_code: str
-    vat_percentage: Optional[int] = None
+    vat_percentage: Optional[Union[str, int]] = None
     without_vat: Optional[bool] = None
 
 
 class ProductEdit(BaseModel):
     name: Optional[str] = None
     unique_code: Optional[str] = None
-    vat_percentage: Optional[int] = None
+    vat_percentage: Optional[Union[str, int]] = None
     without_vat: Optional[bool] = None
 
 
@@ -35,7 +35,7 @@ class SalesLineItemCreate(BaseModel):
     description: str = None
     quantity: float
     unit_cost: float
-    vat_percentage: int
+    vat_percentage: Union[str, int]
     discount: Optional[float] = None
 
 
@@ -58,10 +58,22 @@ class SalesInvoiceCreate(BaseModel):
     manual_seller_trn: Optional[str] = None
     manual_seller_address: Optional[str] = None
 
+    due_date: Optional[datetime]
+    paid_in_advance: Optional[bool] = False
+    advance_amount: Optional[float] = None
+    advance_paid_at: Optional[datetime] = None
+    advance_note: Optional[str] = None
+
 
 class SalesInvoiceEdit(BaseModel):
     corrected_fields: dict
     line_items: Optional[List[SalesLineItemCreate]] = None
+
+
+class SalesPaymentCreate(BaseModel):
+    amount: float
+    paid_at: Optional[datetime] = None
+    note: Optional[str] = None
 
 
 class InventoryItemCreate(BaseModel):
@@ -93,3 +105,15 @@ class InvoiceDownloadOptions(BaseModel):
 
 class SalesTermsUpdate(BaseModel):
     terms: Optional[str] = ""
+
+
+class TaxCreditNoteLineItemCreate(BaseModel):
+    invoice_line_item_id: int
+    quantity: float
+
+
+class TaxCreditNoteCreate(BaseModel):
+    credit_note_number: Optional[str] = None
+    credit_note_date: Optional[datetime] = None
+    notes: Optional[str] = None
+    line_items: List[TaxCreditNoteLineItemCreate] = []

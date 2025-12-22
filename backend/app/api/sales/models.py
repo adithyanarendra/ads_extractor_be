@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKey,
     DateTime,
     Text,
+    JSON,
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -69,6 +70,7 @@ class SalesInvoice(Base):
 
     invoice_number = Column(String, nullable=True)
     invoice_date = Column(DateTime(timezone=True), server_default=func.now())
+    due_date = Column(DateTime(timezone=True), nullable=True)
 
     notes = Column(Text, nullable=True)
     terms_and_conditions = Column(Text, nullable=True)
@@ -78,6 +80,9 @@ class SalesInvoice(Base):
     subtotal = Column(Float, nullable=False)
     total_vat = Column(Float, nullable=False)
     total = Column(Float, nullable=False)
+    amount_paid = Column(Float, nullable=False, default=0)
+    last_payment_at = Column(DateTime(timezone=True), nullable=True)
+    payment_events = Column(JSON, nullable=True)
 
     file_path = Column(String, nullable=True)
     file_type = Column(String, nullable=True)
@@ -142,3 +147,63 @@ class SalesTerms(Base):
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class SalesTaxCreditNote(Base):
+    __tablename__ = "sales_tax_credit_notes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
+
+    reference_invoice_id = Column(
+        Integer, ForeignKey("sales_invoices.id", ondelete="SET NULL"), nullable=True
+    )
+
+    credit_note_number = Column(String, nullable=False, index=True)
+    credit_note_date = Column(DateTime(timezone=True), server_default=func.now())
+
+    customer_name = Column(String, nullable=True)
+    customer_trn = Column(String, nullable=True)
+
+    notes = Column(Text, nullable=True)
+
+    subtotal = Column(Float, nullable=False)
+    total_vat = Column(Float, nullable=False)
+    total = Column(Float, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    reference_invoice = relationship("SalesInvoice", passive_deletes=True)
+    line_items = relationship(
+        "SalesTaxCreditNoteLineItem",
+        back_populates="credit_note",
+        cascade="all, delete-orphan",
+    )
+
+
+class SalesTaxCreditNoteLineItem(Base):
+    __tablename__ = "sales_tax_credit_note_line_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    credit_note_id = Column(
+        Integer, ForeignKey("sales_tax_credit_notes.id", ondelete="CASCADE")
+    )
+
+    product_id = Column(
+        Integer, ForeignKey("sales_products.id", ondelete="SET NULL"), nullable=True
+    )
+    name = Column(String, nullable=True)
+
+    description = Column(String, nullable=True)
+    quantity = Column(Float, nullable=False)
+    unit_cost = Column(Float, nullable=False)
+    vat_percentage = Column(Integer, nullable=False)
+
+    discount = Column(Float, nullable=True)
+    line_total = Column(Float, nullable=False)
+
+    credit_note = relationship("SalesTaxCreditNote", back_populates="line_items")
+    product = relationship("SalesProduct", passive_deletes=True)

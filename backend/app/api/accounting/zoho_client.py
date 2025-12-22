@@ -186,14 +186,19 @@ class ZohoClient:
         invoices = payload.get("invoices", [])
         account_id = payload.get("account_id")
         invoice_type = payload.get("invoice_type", "expense")
-        
-        if not account_id:
-            return {"success": 0, "failed": len(invoices), "error": "Missing account_id"}
 
         summary = {"success": 0, "failed": 0, "errors": [], "details": []}
 
         for invoice in invoices:
             invoice_id = invoice.get("id")
+            invoice_account_id = invoice.get("account_id") or account_id
+
+            if not invoice_account_id:
+                summary["failed"] += 1
+                summary["errors"].append(
+                    f"Missing Chart of Account for invoice {invoice_id}"
+                )
+                continue
 
             if invoice_type == "sales":
                 customer_name = invoice.get("customer_name") or invoice.get("vendor_name") or "Unknown Customer"
@@ -209,7 +214,7 @@ class ZohoClient:
                     "invoice_date": invoice.get("bill_date") or invoice.get("invoice_date"),
                     "description": invoice.get("description"),
                     "amount": invoice.get("amount"),
-                    "account_id": account_id,
+                    "account_id": invoice_account_id,
                 }
                 result = self.create_sales_invoice(invoice_payload)
             else:
@@ -226,7 +231,7 @@ class ZohoClient:
                     "bill_date": invoice.get("bill_date"),
                     "description": invoice.get("description"),
                     "amount": invoice.get("amount"),
-                    "account_id": account_id,
+                    "account_id": invoice_account_id,
                 }
                 result = self.create_bill(bill_payload)
 

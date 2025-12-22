@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+
+    <style>
+        /* ==============================
+   PAGE & ROOT — FIXED
+============================== */
+
+
+        html,
+        body {
+            width: 72mm;
+            margin: 0;
+            padding: 0;
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 13px;
+            line-height: 1.35;
+        }
+
+        /* ==============================
+   HELPERS
+============================== */
+        .center {
+            text-align: center;
+        }
+
+        .right {
+            text-align: right;
+        }
+
+        .bold {
+            font-weight: bold;
+        }
+
+        .small {
+            font-size: 11px;
+        }
+
+        .line {
+            border-bottom: 1px solid #000;
+            margin: 6px 0;
+        }
+
+        /* ==============================
+   HEADER
+============================== */
+        .company-name {
+            font-size: 15px;
+            font-weight: bold;
+        }
+
+        /* ==============================
+   ITEMS
+============================== */
+        .item {
+            margin-bottom: 6px;
+        }
+
+        .item-name {
+            font-weight: bold;
+        }
+
+        .item-desc {
+            font-size: 11px;
+            color: #444;
+        }
+
+        .item-meta {
+            font-size: 12px;
+        }
+
+        /* ==============================
+   TOTALS
+============================== */
+        .totals-row {
+            margin: 3px 0;
+        }
+
+        .totals-label {
+            display: inline-block;
+            width: 60%;
+        }
+
+        .totals-value {
+            display: inline-block;
+            width: 38%;
+            text-align: right;
+        }
+
+        @media print {
+            @page {
+                size: auto;
+                margin: 0;
+            }
+
+            html,
+            body {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="center">
+        <div class="company-name">{{ invoice.company_name }}</div>
+
+        {% if invoice.company_trn %}
+        <div class="small">TRN: {{ invoice.company_trn }}</div>
+        {% endif %}
+
+        {% if invoice.company_address %}
+        <div class="small">{{ invoice.company_address }}</div>
+        {% endif %}
+    </div>
+
+    <div class="line"></div>
+
+    <div class="small">
+        <div><b>Invoice:</b> {{ invoice.invoice_number }}</div>
+        <div><b>Date:</b> {{ invoice.invoice_date.strftime('%d-%m-%Y') }}</div>
+    </div>
+
+    <div class="line"></div>
+
+    {% for li in invoice.line_items %}
+    <div class="item">
+        <div class="item-name">
+            {{ li.name or li.product.name }}
+        </div>
+
+        {% if li.description %}
+        <div class="item-desc">{{ li.description }}</div>
+        {% endif %}
+
+        <div class="item-meta">
+            {{ li.quantity }} × {{ li.unit_cost }}
+            <span class="right" style="float:right;">{{ li.line_total }}</span>
+        </div>
+    </div>
+    {% endfor %}
+
+    <div class="line"></div>
+
+    <div class="totals-row">
+        <span class="totals-label bold">Subtotal</span>
+        <span class="totals-value">{{ invoice.subtotal }}</span>
+    </div>
+
+    <div class="totals-row">
+        <span class="totals-label bold">VAT</span>
+        <span class="totals-value">{{ invoice.total_vat }}</span>
+    </div>
+
+    {% if invoice.discount %}
+    <div class="totals-row">
+        <span class="totals-label bold">Discount</span>
+        <span class="totals-value">-{{ invoice.discount }}</span>
+    </div>
+    {% endif %}
+
+    <div class="totals-row bold">
+        <span class="totals-label">TOTAL</span>
+        <span class="totals-value">{{ invoice.total }}</span>
+    </div>
+
+    <div class="line"></div>
+
+    <div class="center small">
+        This is a computer generated invoice<br>
+        --- THANK YOU ---
+    </div>
+
+</body>
+
+</html>

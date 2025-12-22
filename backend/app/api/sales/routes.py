@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from io import BytesIO
 
@@ -7,6 +7,7 @@ from ...core.database import get_db
 from ..invoices.routes import get_current_user
 from . import crud, schemas
 from .templates import renderer
+from .templates.renderer_escpos import render_invoice_escpos
 
 router = APIRouter(prefix="/sales", tags=["sales"])
 
@@ -17,6 +18,14 @@ async def get_next_invoice_number_api(
     current_user=Depends(get_current_user),
 ):
     number = await crud.get_next_invoice_number(db, current_user.effective_user_id)
+    return {"ok": True, "data": number}
+
+@router.get("/credit-notes/next-number")
+async def get_next_credit_note_number_api(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    number = await crud.get_next_credit_note_number(db, current_user.effective_user_id)
     return {"ok": True, "data": number}
 
 
@@ -143,6 +152,30 @@ async def list_sales_invoices(
     invoices = await crud.list_invoices(db, current_user.effective_user_id)
     return {"ok": True, "message": "Fetched", "data": invoices}
 
+@router.get("/credit-notes")
+async def list_tax_credit_notes(
+    db=Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    notes = await crud.list_tax_credit_notes(db, current_user.effective_user_id)
+    return {"ok": True, "message": "Fetched", "data": notes}
+
+
+@router.post("/invoices/{invoice_id}/credit-notes")
+async def create_tax_credit_note(
+    invoice_id: int,
+    payload: schemas.TaxCreditNoteCreate,
+    db=Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    data, error = await crud.create_tax_credit_note(
+        db, current_user.effective_user_id, invoice_id, payload
+    )
+    if data is None:
+        return {"ok": False, "message": error or "Unable to create credit note"}
+
+    return {"ok": True, "message": "Credit note created", "data": data}
+
 
 @router.delete("/invoices/{invoice_id}")
 async def delete_sales_invoice(
@@ -150,6 +183,23 @@ async def delete_sales_invoice(
 ):
     ok = await crud.delete_invoice(db, current_user.effective_user_id, invoice_id)
     return {"ok": ok, "message": "Deleted" if ok else "Not found"}
+
+
+@router.post("/invoices/{invoice_id}/payments")
+async def record_sales_payment(
+    invoice_id: int,
+    payload: schemas.SalesPaymentCreate,
+    db=Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    data, error = await crud.record_payment(
+        db, current_user.effective_user_id, invoice_id, payload
+    )
+    if data is None:
+        return {"ok": False, "message": error or "Unable to record payment"}
+
+    message = error or "Payment recorded"
+    return {"ok": True, "message": message, "data": data}
 
 
 @router.get("/inventory")
@@ -249,5 +299,31 @@ async def download_invoice(
         media_type="application/pdf",
         headers={
             "Content-Disposition": f"attachment; filename='invoice_{invoice_id}.pdf'"
+        },
+    )
+
+
+@router.get("/invoices/{invoice_id}/print/thermal-escpos")
+async def print_invoice_thermal_escpos(
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    invoice = await crud.get_invoice_with_items(
+        db, current_user.effective_user_id, invoice_id
+    )
+
+    if not invoice:
+        return {"ok": False, "message": "Invoice not found"}
+
+    escpos_bytes = render_invoice_escpos(invoice)
+
+    return Response(
+        content=escpos_bytes,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="invoice_{invoice_id}.escpos"'
+            )
         },
     )

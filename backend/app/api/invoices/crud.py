@@ -11,6 +11,7 @@ from ...core.database import SessionLocal
 from app.api.invoices.models import Invoice
 from ..suppliers import crud as suppliers_crud
 from ..users.crud import get_connection_status
+from ..batches import crud as batches_crud
 
 
 def sanitize_total(value):
@@ -223,7 +224,12 @@ async def get_invoice_by_id_and_owner(
         .execution_options(populate_existing=False, autoflush=False, autocommit=False)
     )
     result = await db.execute(stmt)
-    return result.scalar_one_or_none()
+    invoice = result.scalar_one_or_none()
+
+    if invoice and invoice.source_sales_invoice_id is not None:
+        return None
+
+    return invoice
 
 
 async def list_archived_expense_invoices(
@@ -299,6 +305,7 @@ async def list_invoices_by_owner(
         invoices_models.Invoice.batch_id.is_(None),
         invoices_models.Invoice.is_deleted == False,
         or_(Invoice.is_published == False, Invoice.is_published.is_(None)),
+        invoices_models.Invoice.source_sales_invoice_id.is_(None),
     )
 
     if invoice_type:
@@ -351,6 +358,7 @@ async def list_invoices_to_review_by_owner(db: AsyncSession, owner_id: int):
         invoices_models.Invoice.reviewed == False,
         invoices_models.Invoice.extraction_status == "success",
         Invoice.is_deleted == False,
+        Invoice.source_sales_invoice_id.is_(None),
     )
     result = await db.execute(stmt)
     return [{"id": row.id, "file_path": row.file_path} for row in result.all()]
@@ -364,6 +372,9 @@ async def update_invoice_review(
     corrected_fields: Dict[str, Optional[str]] | None = None,
 ):
     invoice = await get_invoice_by_id_and_owner(db, invoice_id, owner_id)
+    if invoice.source_sales_invoice_id is not None:
+        return None
+
     if not invoice:
         return None
     invoice.reviewed = reviewed
@@ -437,6 +448,10 @@ async def edit_invoice(
     corrected_fields: Dict[str, Optional[str]],
 ):
     invoice = await get_invoice_by_id_and_owner(db, invoice_id, owner_id)
+
+    if invoice.source_sales_invoice_id is not None:
+        return None
+
     if not invoice:
         return None
 
@@ -565,16 +580,18 @@ async def run_invoice_extraction(
 
 
 async def get_invoice_analytics(db: AsyncSession, owner_id: int):
-    """Returns analytics summary for invoices owned by the user."""
+    result = await db.execute(
+        select(
+            invoices_models.Invoice.type,
+            invoices_models.Invoice.total,
+            invoices_models.Invoice.vendor_name,
+        ).where(
+            invoices_models.Invoice.owner_id == owner_id,
+            Invoice.is_deleted == False,
+            Invoice.source_sales_invoice_id.is_(None),
+        )
+    )
 
-    # Fetch all invoices once and sanitize totals in Python
-    invoices_query = select(
-        invoices_models.Invoice.type,
-        invoices_models.Invoice.total,
-        invoices_models.Invoice.vendor_name,
-        Invoice.is_deleted == False,
-    ).where(invoices_models.Invoice.owner_id == owner_id)
-    result = await db.execute(invoices_query)
     invoices = result.all()
 
     if not invoices:
@@ -657,6 +674,7 @@ async def list_invoices_by_company(
         invoices_models.Invoice.batch_id.is_(None),
         invoices_models.Invoice.is_published == False,
         Invoice.is_deleted == False,
+        Invoice.source_sales_invoice_id.is_(None),
     )
 
     if invoice_type:
@@ -793,3 +811,64 @@ async def list_unpaid_expense_invoices(db: AsyncSession, owner_id: int):
 
     result = await db.execute(stmt)
     return result.scalars().all()
+
+
+import hashlib
+
+
+async def create_invoice_from_sales(
+    db: AsyncSession,
+    owner_id: int,
+    sales_invoice,
+):
+    existing = await get_invoice_by_sales_id(db, sales_invoice.id)
+    if existing:
+        return existing
+
+    hash_input = f"sales:{owner_id}:{sales_invoice.id}"
+    file_hash = hashlib.sha256(hash_input.encode()).hexdigest()
+
+    invoice = Invoice(
+        owner_id=owner_id,
+        type="sales",
+        source_sales_invoice_id=sales_invoice.id,
+        file_path=None,
+        file_hash=file_hash,
+        invoice_number=sales_invoice.invoice_number,
+        invoice_date=(
+            sales_invoice.invoice_date.strftime("%d-%m-%Y")
+            if sales_invoice.invoice_date
+            else None
+        ),
+        vendor_name=sales_invoice.customer_name,
+        trn_vat_number=sales_invoice.customer_trn,
+        before_tax_amount=str(sales_invoice.subtotal),
+        tax_amount=str(sales_invoice.total_vat),
+        total=str(sales_invoice.total),
+        reviewed=True,
+        is_processing=False,
+        extraction_status="success",
+    )
+
+    db.add(invoice)
+    await db.flush()
+    batch_id = await batches_crud.find_matching_batch_for_invoice(
+        db,
+        owner_id,
+        sales_invoice.invoice_date,  # datetime
+    )
+
+    if batch_id:
+        invoice.batch_id = batch_id
+
+    await db.commit()
+    await db.refresh(invoice)
+
+    return invoice
+
+
+async def get_invoice_by_sales_id(db: AsyncSession, sales_invoice_id: int):
+    res = await db.execute(
+        select(Invoice).where(Invoice.source_sales_invoice_id == sales_invoice_id)
+    )
+    return res.scalar_one_or_none()

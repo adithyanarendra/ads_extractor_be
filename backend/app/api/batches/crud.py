@@ -12,7 +12,6 @@ from sqlalchemy.orm import selectinload
 from . import models
 from ...utils.r2 import get_file_from_r2
 from ..invoices.models import Invoice
-from ..invoices.crud import get_invoice_by_id_and_owner
 from .models import Batch
 
 
@@ -44,6 +43,14 @@ async def list_batches(db: AsyncSession, owner_id: int) -> Dict[str, Any]:
             for child in b.children or []:
                 all_invoices.extend(child.invoices or [])
 
+            uploaded_invoices = [
+                inv for inv in all_invoices if inv.source_sales_invoice_id is None
+            ]
+
+            sales_generated_invoices = [
+                inv for inv in all_invoices if inv.source_sales_invoice_id is not None
+            ]
+
             unpublished_invoices = [
                 inv for inv in all_invoices if not getattr(inv, "is_published", False)
             ]
@@ -51,7 +58,8 @@ async def list_batches(db: AsyncSession, owner_id: int) -> Dict[str, Any]:
                 {
                     "id": b.id,
                     "name": b.name,
-                    "invoice_count": len(all_invoices),
+                    "invoice_count": len(uploaded_invoices),
+                    "sales_generated_count": len(sales_generated_invoices),
                     "invoice_count_unpublished": len(unpublished_invoices),
                     "invoice_ids": [inv.id for inv in all_invoices],
                     "parent_id": b.parent_id,
@@ -317,6 +325,8 @@ async def add_invoices_to_batch(
 async def generate_batch_zip_with_csv(
     db: AsyncSession, batch_id: int, owner_id: int
 ) -> tuple[io.BytesIO, str]:
+    from ..invoices.crud import get_invoice_by_id_and_owner
+
     """
     Returns a BytesIO object containing a ZIP file with:
     - All invoice PDFs in the batch
@@ -536,14 +546,21 @@ def parse_single_month_batch(name: str):
 
 
 async def find_matching_batch_for_invoice(
-    db: AsyncSession, owner_id: int, invoice_date: str
+    db: AsyncSession, owner_id: int, invoice_date: datetime | str
 ):
-    """Return a batch ID if a matching month-year batch exists"""
+    exact_match = None
+    range_match = None
+
     try:
         if not invoice_date:
             return None
 
-        date_obj = datetime.strptime(invoice_date, "%d-%m-%Y")
+        if isinstance(invoice_date, datetime):
+            date_obj = invoice_date
+        elif isinstance(invoice_date, str):
+            date_obj = datetime.strptime(invoice_date, "%d-%m-%Y")
+        else:
+            return None
         inv_month, inv_year = date_obj.month, date_obj.year
 
         result = await db.execute(
@@ -681,6 +698,7 @@ async def clear_all_invoices_from_batch(db: AsyncSession, batch_id: int, owner_i
         await db.rollback()
         return _err("Failed to reset batch.", str(e))
 
+
 async def get_invoices_for_qb_batch_status(
     db: AsyncSession, batch_id: int, owner_id: int
 ):
@@ -702,11 +720,11 @@ async def get_invoices_for_qb_batch_status(
         return []
 
     all_invoices = []
-    
+
     for inv in batch.invoices:
         if not inv.is_published:
             all_invoices.append(inv)
-            
+
     for child in batch.children or []:
         for inv in child.invoices:
             if not inv.is_published:

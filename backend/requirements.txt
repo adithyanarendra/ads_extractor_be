@@ -3,6 +3,8 @@ aistudio-sdk==0.3.8
 alembic==1.16.5
 annotated-types==0.7.0
 anyio==4.11.0
+appdirs==1.4.4
+argcomplete==3.6.3
 asyncpg==0.30.0
 bce-python-sdk==0.9.46
 bcrypt==4.3.0
@@ -52,6 +54,7 @@ huggingface-hub==0.35.1
 idna==3.10
 imageio==2.37.0
 imagesize==1.4.1
+importlib_resources==6.5.2
 intuit-oauth==1.2.6
 itsdangerous==2.2.0
 Jinja2==3.1.6
@@ -102,15 +105,18 @@ PyJWT==2.10.1
 pypdfium2==4.30.0
 pyphen==0.17.2
 pytesseract==0.3.13
+python-barcode==0.16.1
 python-bidi==0.6.6
 python-dateutil==2.9.0.post0
 python-docx==1.2.0
 python-dotenv==1.1.1
+python-escpos==3.1
 python-jose==3.5.0
 python-magic==0.4.27
 python-multipart==0.0.20
 pytz==2025.2
 PyYAML==6.0.2
+qrcode==8.2
 RapidFuzz==3.14.3
 regex==2025.9.18
 requests==2.32.5

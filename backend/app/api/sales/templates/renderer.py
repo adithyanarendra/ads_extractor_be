@@ -39,7 +39,7 @@ async def render_detailed_invoice_pdf(invoice):
 
 
 async def render_thermal_invoice_pdf(invoice, width_mm=58):
-    template = load_template("thermal.html")
+    template = load_template("thermal_pdf.html")
 
     html_content = template.render(invoice=invoice, width_mm=width_mm)
 
@@ -48,3 +48,11 @@ async def render_thermal_invoice_pdf(invoice, width_mm=58):
     )
 
     return pdf
+
+
+async def render_thermal_invoice_html(invoice):
+    template = load_template("thermal_print.html")
+
+    html_content = template.render(invoice=invoice)
+
+    return html_content

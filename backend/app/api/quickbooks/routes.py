@@ -194,7 +194,7 @@ async def fetch_chart_of_accounts(db: AsyncSession = Depends(get_db)):
     base_url = _qb_base_url()
     query_url = f"{base_url}/v3/company/{realm_id}/query"
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
-    params = {"query": "select Id,Name,AccountType,AccountSubType,CurrentBalance from Account"}
+    params = {"query": "select Id,Name,AccountType,AccountSubType,CurrentBalance,ParentRef from Account"}
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(query_url, headers=headers, params=params)
@@ -211,6 +211,7 @@ async def fetch_chart_of_accounts(db: AsyncSession = Depends(get_db)):
             "type": a.get("AccountType"),
             "sub_type": a.get("AccountSubType"),
             "balance": a.get("CurrentBalance"),
+            "parent_id": (a.get("ParentRef") or {}).get("value"),
         }
         for a in accounts
     ]

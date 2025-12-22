@@ -1,6 +1,8 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from datetime import datetime
+from app.api.lov.currency import CurrencyEnum
+
 
 class UserBase(BaseModel):
     id: int
@@ -50,6 +52,7 @@ class UpdateUserRequest(BaseModel):
     user_id: Optional[int] = None
     name: Optional[str] = None
     is_accountant: Optional[bool] = None
+    currency: Optional[CurrencyEnum] = None
 
 
 class SelectCompanyPayload(BaseModel):

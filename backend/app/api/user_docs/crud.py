@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 import mimetypes
 from sqlalchemy.future import select
-from sqlalchemy import delete
+from sqlalchemy import delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
 
@@ -161,7 +161,8 @@ async def list_user_docs(db: AsyncSession, user_id: int) -> List[UserDocs]:
     try:
         result = await db.execute(
             select(UserDocs).where(
-                UserDocs.user_id == user_id, UserDocs.doc_type != "sales_invoice_logo"
+                UserDocs.user_id == user_id,
+                or_(UserDocs.doc_type != "sales_invoice_logo", UserDocs.doc_type.is_(None)),
             )
         )
         docs = result.scalars().all()
@@ -173,6 +174,7 @@ async def list_user_docs(db: AsyncSession, user_id: int) -> List[UserDocs]:
                 "file_url": d.file_url,
                 "expiry_date": d.expiry_date,
                 "uploaded_at": d.uploaded_at,
+                "is_processing": d.is_processing,
             }
             for d in docs
         ]

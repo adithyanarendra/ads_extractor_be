@@ -1,6 +1,9 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+import enum
+from app.api.lov.currency import CurrencyEnum
+
 
 from ...core.database import Base
 
@@ -9,6 +12,13 @@ from ..user_docs.models import UserDocs
 from ..reports.models import Report
 from ..companies.models import CompanyUser
 from ..invoices.models import Invoice
+
+
+class SubscriptionStatus(str, enum.Enum):
+    NONE = "NONE"
+    PENDING = "PENDING"
+    ACTIVE = "ACTIVE"
+    EXPIRED = "EXPIRED"
 
 
 class User(Base):
@@ -29,7 +39,6 @@ class User(Base):
     is_qb_connected = Column(Boolean, default=False, nullable=False)
     is_zb_connected = Column(Boolean, default=False, nullable=False)
 
-
     signup_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Audit fields
@@ -43,6 +52,21 @@ class User(Base):
     last_updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    last_login_at = Column(
+        DateTime(timezone=True),
+        nullable=True
+    )  
+
+    currency = Column(String(3), nullable=True, server_default=CurrencyEnum.AED.value)
+
+    subscription_status = Column(
+        String(20),
+        nullable=False,
+        server_default=SubscriptionStatus.NONE.value,
+        index=True,
+    )
+
+    paid_till = Column(DateTime(timezone=True), nullable=True)
 
     invoices = relationship(
         "Invoice",

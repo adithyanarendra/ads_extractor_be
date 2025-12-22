@@ -19,6 +19,7 @@ class BaseDocSchema(BaseModel):
 
     uploaded_at: datetime
     updated_at: datetime
+    is_processing: Optional[bool] = None
 
     model_config = {"from_attributes": True}
 
