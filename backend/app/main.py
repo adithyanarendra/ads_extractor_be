@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic_core import CoreSchema, core_schema
 from pydantic import GetCoreSchemaHandler
 from typing import Any
-from app.api.quickbooks.routes import router as quickbooks_router
 
 
 class AssumedAsyncSession:
@@ -36,6 +35,7 @@ from .api.accounting.routes import router as accounting_router
 from .api.sales.routes import router as sales_invoices_router
 from .api.suppliers.routes import router as suppliers_router
 from .api.payments.routes import router as payments_router
+from .core.enforcement import require_active_subscription
 
 
 app = FastAPI(title="FastAPI Invoice OCR")
@@ -61,18 +61,36 @@ app.add_middleware(
 )
 
 app.include_router(users_routes.router)
-app.include_router(invoices_routes.router)
-app.include_router(companies_routes.router)
-app.include_router(lov_router)
-app.include_router(batches_router)
-app.include_router(user_docs_router)
-app.include_router(reports_router)
-app.include_router(quickbooks_routes.router)
-app.include_router(statements_router)
-app.include_router(accounting_router)
-app.include_router(sales_invoices_router)
-app.include_router(suppliers_router)
 app.include_router(payments_router)
+app.include_router(
+    invoices_routes.router, dependencies=[Depends(require_active_subscription)]
+)
+app.include_router(
+    companies_routes.router, dependencies=[Depends(require_active_subscription)]
+)
+app.include_router(lov_router, dependencies=[Depends(require_active_subscription)])
+app.include_router(
+    batches_router, dependencies=[Depends(require_active_subscription)]
+)
+app.include_router(
+    user_docs_router, dependencies=[Depends(require_active_subscription)]
+)
+app.include_router(
+    reports_router, dependencies=[Depends(require_active_subscription)]
+)
+app.include_router(
+    quickbooks_routes.router
+)
+app.include_router(
+    statements_router, dependencies=[Depends(require_active_subscription)]
+)
+app.include_router(accounting_router)
+app.include_router(
+    sales_invoices_router, dependencies=[Depends(require_active_subscription)]
+)
+app.include_router(
+    suppliers_router, dependencies=[Depends(require_active_subscription)]
+)
 
 
 @app.get("/")
@@ -101,6 +119,3 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     await engine.dispose()
-
-
-app.include_router(quickbooks_router)

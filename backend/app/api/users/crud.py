@@ -40,7 +40,6 @@ async def create_user(
     hashed = get_password_hash(password)
     first_user = await db.execute(select(users_models.User))
     first_user_exists = first_user.scalars().first() is not None
-
     user = users_models.User(
         email=email,
         hashed_password=hashed,
@@ -50,6 +49,7 @@ async def create_user(
         updated_by=created_by,
         last_updated_by=created_by,
         is_approved=False,
+        subscription_status=users_models.SubscriptionStatus.TRIAL.value,
     )
     db.add(user)
     await db.commit()

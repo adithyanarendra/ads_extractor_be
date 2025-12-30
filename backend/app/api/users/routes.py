@@ -11,6 +11,7 @@ from ...core.database import get_db
 from ..companies import crud as companies_crud
 from ..companies.models import CompanyUser
 from . import schemas as users_schemas
+from ...core.enforcement import trial_end_for_user
 from app.core.auth import get_current_user
 from ..invoices.models import Invoice
 from ..user_docs.models import UserDocs
@@ -61,6 +62,7 @@ async def signup(
             "user_id": db_user.id,
             "name": db_user.name,
             "admin": db_user.is_admin,
+            "trial_ends_at": trial_end_for_user(db_user),
         }
 
     except SQLAlchemyError as e:
@@ -271,6 +273,10 @@ async def get_all_users(
             "email": u.email,
             "is_admin": u.is_admin,
             "is_accountant": u.is_accountant,
+            "subscription_status": u.subscription_status,
+            "paid_till": u.paid_till,
+            "trial_ends_at": trial_end_for_user(u),
+            "skip_payment_check": u.skip_payment_check,
         }
         for u in users
     ]
@@ -311,6 +317,10 @@ async def get_user_details(
             "is_accountant": user.is_accountant,
             "is_super_admin": user.is_super_admin,
             "is_approved": user.is_approved,
+            "subscription_status": user.subscription_status,
+            "paid_till": user.paid_till,
+            "trial_ends_at": trial_end_for_user(user),
+            "skip_payment_check": user.skip_payment_check,
             "created_by": lookup.get(user.created_by),
             "created_at": user.created_at,
             "updated_by": lookup.get(user.updated_by),
@@ -641,6 +651,10 @@ async def get_user_info(
             "email": user.email,
             "name": user.name,
             "currency": user.currency,  
+            "subscription_status": user.subscription_status,
+            "paid_till": user.paid_till,
+            "trial_ends_at": trial_end_for_user(user),
+            "skip_payment_check": user.skip_payment_check,
         },
     }
 
@@ -657,6 +671,33 @@ async def get_user_currency(
 
     return {
         "currency": user.currency
+    }
+
+
+@router.put("/payment_override/{user_id}")
+async def set_payment_override(
+    user_id: int,
+    payload: users_schemas.PaymentOverrideRequest,
+    db: AsyncSession = Depends(get_db),
+    current_admin=Depends(auth.get_current_admin),
+):
+    updated_user = await crud.update_user_fields(
+        db,
+        user_id,
+        {"skip_payment_check": payload.skip_payment_check},
+        updated_by=current_admin.id,
+    )
+    if not updated_user:
+        return {"ok": False, "error": "User not found"}
+
+    return {
+        "ok": True,
+        "msg": "Payment override updated",
+        "user": {
+            "id": updated_user.id,
+            "email": updated_user.email,
+            "skip_payment_check": updated_user.skip_payment_check,
+        },
     }
 
 @router.get("/clients")

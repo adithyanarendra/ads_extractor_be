@@ -15,6 +15,9 @@ class UserBase(BaseModel):
     is_zb_connected: bool  
     created_at: datetime
     updated_at: datetime
+    subscription_status: Optional[str] = None
+    paid_till: Optional[datetime] = None
+    skip_payment_check: Optional[bool] = None
 
     class Config:
         from_attributes = True
@@ -53,6 +56,10 @@ class UpdateUserRequest(BaseModel):
     name: Optional[str] = None
     is_accountant: Optional[bool] = None
     currency: Optional[CurrencyEnum] = None
+
+
+class PaymentOverrideRequest(BaseModel):
+    skip_payment_check: bool
 
 
 class SelectCompanyPayload(BaseModel):

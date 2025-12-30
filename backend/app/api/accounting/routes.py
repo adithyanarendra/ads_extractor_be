@@ -14,6 +14,7 @@ from .oauth_utils import ZohoOAuth
 from app.core import auth
 from app.api.users.crud import mark_zb_connected, mark_zb_disconnected
 from app.core.auth import get_current_user
+from app.core.enforcement import require_active_subscription
 from app.api.users.models import User
 from app.api.invoices import crud as invoices_crud
 
@@ -186,7 +187,10 @@ async def zoho_callback(
 # 3. CHART OF ACCOUNTS
 # ------------------------------------------------------------
 @router.get("/zoho/chart-of-accounts")
-async def get_chart_of_accounts(db: AsyncSession = Depends(get_db)):
+async def get_chart_of_accounts(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_active_subscription),
+):
     org_id = 1
     conn = await crud.get_connection(db, org_id)
     if not conn:
@@ -210,7 +214,11 @@ async def get_chart_of_accounts(db: AsyncSession = Depends(get_db)):
 # 4. PUSH SINGLE INVOICE
 # ------------------------------------------------------------
 @router.post("/zoho/push-invoice")
-async def push_invoice(invoice_data: dict, db: AsyncSession = Depends(get_db)):
+async def push_invoice(
+    invoice_data: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_active_subscription),
+):
     org_id = 1
     conn = await crud.get_connection(db, org_id)
 
@@ -264,7 +272,7 @@ async def mark_invoices_verified(
 async def push_invoices(
     payload: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_active_subscription),
 ):
     """Push multiple invoices to Zoho Books"""
     org_id = 1
@@ -363,7 +371,10 @@ async def push_invoices(
 # 6. STATUS
 # ------------------------------------------------------------
 @router.get("/zoho/status")
-async def zoho_status(db: AsyncSession = Depends(get_db)):
+async def zoho_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_active_subscription),
+):
     org_id = 1
     conn = await crud.get_connection(db, org_id)
 
@@ -390,7 +401,7 @@ async def zoho_status(db: AsyncSession = Depends(get_db)):
 @router.post("/zoho/disconnect")
 async def zoho_disconnect(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_active_subscription),
 ):
     org_id = 1
     conn = await crud.get_connection(db, org_id)

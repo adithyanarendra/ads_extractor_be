@@ -15,6 +15,7 @@ from ..invoices.models import Invoice
 
 
 class SubscriptionStatus(str, enum.Enum):
+    TRIAL = "TRIAL"
     NONE = "NONE"
     PENDING = "PENDING"
     ACTIVE = "ACTIVE"
@@ -40,6 +41,7 @@ class User(Base):
     is_zb_connected = Column(Boolean, default=False, nullable=False)
 
     signup_at = Column(DateTime(timezone=True), server_default=func.now())
+    skip_payment_check = Column(Boolean, default=False, nullable=False)
 
     # Audit fields
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)

@@ -24,6 +24,7 @@ from ...utils import doc_fields as fields
 
 from .schemas import DOC_SCHEMA_MAP, BaseDocSchema
 
+MONTH_MAP = {m.lower(): i for i, m in enumerate(month_abbr) if m}
 
 def _allowed_update_keys_for_doc_type(doc_type: str):
     core_keys = {
@@ -306,14 +307,27 @@ async def get_user_doc_details(db: AsyncSession, user_id: int, doc_id: int):
         "data": Schema.from_orm(doc).dict(),
     }
 
+def get_fy_aware_year(month_name: str) -> int:
+    now = datetime.now(timezone.utc)
+    fy_start_year = now.year if now.month >= 4 else now.year - 1
+
+    month_num = MONTH_MAP.get(month_name[:3].lower())
+    if not month_num:
+        return fy_start_year
+
+    return fy_start_year + 1 if month_num <= 3 else fy_start_year
+
+def transform_vat_name_to_current_fy(original_name: str) -> str:
+    months = findall(r"[A-Za-z]{3,}", original_name)
+    if len(months) < 2:
+        return original_name
+
+    start_month, end_month = months[0], months[1]
+    end_year = get_fy_aware_year(end_month)
+
+    return f"{start_month} - {end_month} {end_year}"
 
 async def _autocreate_vat_batches_for_doc(db: AsyncSession, doc: UserDocs):
-    """
-    Create batches for non-null VAT periods using the exact extracted string as the batch name.
-    - Creates only if the value exists (skip nulls)
-    - No duplicates: relies on batches.crud.create_batch duplicate check
-    - Do NOT lock automatically
-    """
     owner_id = doc.user_id
 
     period_names = [
@@ -323,19 +337,28 @@ async def _autocreate_vat_batches_for_doc(db: AsyncSession, doc: UserDocs):
         doc.vat_batch_four,
     ]
 
-    for name in period_names:
-        if not name:
+    for raw_name in period_names:
+        if not raw_name:
             continue
-        years = findall(r"\b(20\d{2})\b", name)
-        batch_year = int(years[0]) if years else None
+
+        name = transform_vat_name_to_current_fy(raw_name)
+
+        year_match = findall(r"\b(20\d{2})\b", name)
+        batch_year = int(year_match[0]) if year_match else None
 
         res = await batches_crud.create_batch(
-            db, name=name, owner_id=owner_id, invoice_ids=None, batch_year=batch_year
+            db,
+            name=name,
+            owner_id=owner_id,
+            invoice_ids=None,
+            batch_year=batch_year,
         )
 
         if res.get("ok"):
             parent_id = res["data"]["id"]
-            asyncio.create_task(_autocreate_child_batches(owner_id, name, parent_id))
+            asyncio.create_task(
+                _autocreate_child_batches(owner_id, name, parent_id)
+            )
 
 
 async def _autocreate_child_batches(

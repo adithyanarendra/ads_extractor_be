@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...core.database import get_db
 from ...core.auth import get_current_user
 from .service import create_payment_link, handle_mamopay_webhook
+from ...core.enforcement import is_trial_active, trial_end_for_user
 from .schemas import CreatePaymentResponse, PaymentStatusOut
 
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -21,9 +22,13 @@ async def buy_plan(
 
 @router.get("/status", response_model=PaymentStatusOut)
 async def payment_status(user=Depends(get_current_user)):
+    trial_end = trial_end_for_user(user)
     return {
         "subscription_status": user.subscription_status,
         "paid_till": user.paid_till,
+        "trial_ends_at": trial_end,
+        "trial_active": is_trial_active(user),
+        "skip_payment_check": user.skip_payment_check,
     }
 
 

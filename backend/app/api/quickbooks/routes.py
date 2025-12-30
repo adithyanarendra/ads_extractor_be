@@ -28,6 +28,7 @@ from app.api.batches import crud as batches_crud
 from app.core.auth import decode_token
 from app.api.users.crud import mark_qb_connected, mark_qb_disconnected
 from app.core.auth import get_current_user
+from app.core.enforcement import require_active_subscription
 from ..users import models as users_models
 from app.api.invoices.crud import reset_invoices_on_software_switch
 
@@ -118,7 +119,10 @@ async def get_or_create_vendor_in_qb(
         return created_resp.json().get("Vendor", {}).get("Id")
 
 @router.get("/status")
-async def quickbooks_status(db: AsyncSession = Depends(get_db)):
+async def quickbooks_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(require_active_subscription),
+):
     access_token, realm_id = await get_valid_access_token(db)
     return {"connected": bool(access_token), "realm_id": realm_id}
 
@@ -176,13 +180,19 @@ async def quickbooks_callback(request: Request, db: AsyncSession = Depends(get_d
 
 
 @router.get("/check-auth")
-async def check_auth(db: AsyncSession = Depends(get_db)):
+async def check_auth(
+    db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(require_active_subscription),
+):
     access_token, _ = await get_valid_access_token(db)
     return {"authorized": bool(access_token)}
 
 
 @router.get("/chart-of-accounts")
-async def fetch_chart_of_accounts(db: AsyncSession = Depends(get_db)):
+async def fetch_chart_of_accounts(
+    db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(require_active_subscription),
+):
     now = time.time()
     if now - _COA_CACHE["ts"] < CACHE_TTL:
         return {"accounts": _COA_CACHE["accounts"]}
@@ -223,7 +233,7 @@ async def fetch_chart_of_accounts(db: AsyncSession = Depends(get_db)):
 @router.delete("/disconnect")
 async def disconnect_quickbooks(
     db: AsyncSession = Depends(get_db),
-    current_user: users_models.User = Depends(get_current_user),
+    current_user: users_models.User = Depends(require_active_subscription),
 ):
 
     await mark_qb_disconnected(db, current_user.id)
@@ -343,6 +353,7 @@ async def push_bill_to_quickbooks(
     invoice_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(require_active_subscription),
 ):
     chart_of_account_id = body.get("chart_of_account_id")
     chart_of_account_name = body.get("chart_of_account_name")
@@ -372,6 +383,7 @@ async def push_bill_to_quickbooks(
 async def push_multiple_invoices(
     body: dict,
     db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(require_active_subscription),
 ):
     invoice_ids: list[int] = body.get("invoice_ids")
 
@@ -432,7 +444,7 @@ async def push_multiple_invoices(
 async def push_batch_to_quickbooks(
     batch_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: users_models.User = Depends(get_current_user),
+    current_user: users_models.User = Depends(require_active_subscription),
 ):
     import asyncio
     from app.core.database import async_session_maker
@@ -505,7 +517,7 @@ async def push_batch_to_quickbooks(
 async def get_quickbooks_batch_status(
     batch_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: users_models.User = Depends(get_current_user),
+    current_user: users_models.User = Depends(require_active_subscription),
 ):
     """
     Provides a summary of unpublished invoices in a batch for the 

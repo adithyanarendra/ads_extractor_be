@@ -39,8 +39,24 @@ class SalesCustomer(Base):
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
 
     name = Column(String, nullable=False)
+    customer_code = Column(String, nullable=True, index=True)
+
+    is_vat_registered = Column(Boolean, nullable=False, default=False)
     trn = Column(String, nullable=True)
+
+    address_line_1 = Column(Text, nullable=False)
+    city = Column(String, nullable=False)
+    emirate = Column(String, nullable=False)
+    country_code = Column(String, nullable=False, default="AE")
+    postal_code = Column(String, nullable=True)
+
     registered_address = Column(Text, nullable=True)
+
+    email = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+
+    peppol_participant_id = Column(String, nullable=True)
+    external_ref = Column(String, nullable=True)
 
     logo_path = Column(String, nullable=True)
     logo_r2_key = Column(String, nullable=True)
@@ -57,33 +73,44 @@ class SalesInvoice(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
 
+    # seller
     company_name = Column(String, nullable=False)
     company_name_arabic = Column(String, nullable=True)
     company_trn = Column(String, nullable=False)
     company_address = Column(Text, nullable=True)
 
+    # buyer
     customer_id = Column(
         Integer, ForeignKey("sales_customers.id", ondelete="SET NULL"), nullable=True
     )
     customer_name = Column(String, nullable=True)
     customer_trn = Column(String, nullable=True)
 
+    # invoice dets
     invoice_number = Column(String, nullable=True)
+    currency = Column(String, nullable=False, default="AED")
+    invoice_type = Column(String, nullable=False, default="TAX_INVOICE")
     invoice_date = Column(DateTime(timezone=True), server_default=func.now())
+    supply_date = Column(DateTime(timezone=True), nullable=False)
     due_date = Column(DateTime(timezone=True), nullable=True)
 
+    # content
     notes = Column(Text, nullable=True)
     terms_and_conditions = Column(Text, nullable=True)
-
     discount = Column(Float, nullable=True)
 
+    # tax summary
+    tax_summary = Column(JSON, nullable=False)
     subtotal = Column(Float, nullable=False)
     total_vat = Column(Float, nullable=False)
     total = Column(Float, nullable=False)
+
+    # payments
     amount_paid = Column(Float, nullable=False, default=0)
     last_payment_at = Column(DateTime(timezone=True), nullable=True)
     payment_events = Column(JSON, nullable=True)
 
+    # meta
     file_path = Column(String, nullable=True)
     file_type = Column(String, nullable=True)
     is_deleted = Column(Boolean, default=False)

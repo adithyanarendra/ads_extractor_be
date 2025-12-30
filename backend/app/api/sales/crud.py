@@ -13,13 +13,12 @@ from ..user_docs.models import UserDocs
 from ...utils.r2 import s3, R2_BUCKET
 
 
-async def adjust_inventory_for_invoice(db, owner_id, line_items):
-    """
-    Placeholder inventory adjustment. Existing flows expect this helper,
-    but inventory tracking for sales items is optional. No-op for now
-    to avoid failing invoice creation.
-    """
-    return
+def infer_vat_registered(trn: str | None) -> bool:
+    return bool(trn and trn.strip())
+
+
+def vat_category_from_rate(rate: float) -> str:
+    return "S" if rate == 5 else "Z"
 
 
 def normalize_vat(v):
@@ -165,12 +164,30 @@ async def add_customer(db, owner_id, payload: list[schemas.CustomerCreate]):
     created = []
 
     for c in payload:
+        is_vat_registered = (
+            c.is_vat_registered
+            if c.is_vat_registered is not None
+            else infer_vat_registered(c.trn)
+        )
+
         obj = models.SalesCustomer(
             owner_id=owner_id,
             name=c.name,
+            customer_code=c.customer_code,
             trn=c.trn,
+            is_vat_registered=is_vat_registered,
+            address_line_1=c.address_line_1,
+            city=c.city,
+            emirate=c.emirate,
+            country_code=c.country_code or "AE",
+            postal_code=c.postal_code,
             registered_address=c.registered_address,
+            email=c.email,
+            phone=c.phone,
+            peppol_participant_id=c.peppol_participant_id,
+            external_ref=c.external_ref,
         )
+
         db.add(obj)
         created.append(obj)
 
@@ -189,8 +206,13 @@ async def edit_customer(db, owner_id, cid, payload):
     if not customer:
         return None
 
-    for k, v in payload.dict(exclude_unset=True).items():
-        setattr(customer, k, v)
+    data = payload.dict(exclude_unset=True)
+
+    if "trn" in data and "is_vat_registered" not in data:
+        data["is_vat_registered"] = infer_vat_registered(data.get("trn"))
+
+    for field, value in data.items():
+        setattr(customer, field, value)
 
     await db.commit()
     return customer
@@ -226,16 +248,17 @@ async def delete_customer(db, owner_id, cid):
 def compute_line_item_totals(items):
     enriched = []
     subtotal = 0
-    vat = 0
+    vat_total = 0.0
+    tax_map = {}
 
     for item in items:
         base = item.unit_cost * item.quantity
         discount = item.discount or 0
-        discounted = max(base - discount, 0)
+        net = max(base - discount, 0)
 
         vat_pct = normalize_vat(item.vat_percentage)
-        vat_amount = discounted * (vat_pct / 100)
-        total = discounted + vat_amount
+        vat_amount = round(net * (vat_pct / 100), 2)
+        category = vat_category_from_rate(vat_pct)
 
         enriched.append(
             {
@@ -246,16 +269,34 @@ def compute_line_item_totals(items):
                 "unit_cost": item.unit_cost,
                 "vat_percentage": vat_pct,
                 "discount": item.discount,
-                "line_total": round(total, 2),
+                "line_total": round(net + vat_amount, 2),
             }
         )
 
-        subtotal += base
-        vat += vat_amount
+        subtotal += net
+        vat_total += vat_amount
+
+        tax_map.setdefault(category, {"rate": vat_pct, "taxable": 0, "vat": 0})
+        tax_map[category]["taxable"] += net
+        tax_map[category]["vat"] += vat_amount
+
+        tax_summary = {
+            "categories": [
+                {
+                    "vat_rate": v["rate"],
+                    "taxable_amount": round(v["taxable"], 2),
+                    "vat_amount": round(v["vat"], 2),
+                    "category_code": k,
+                }
+                for k, v in tax_map.items()
+            ],
+            "total_vat": round(vat_total, 2),
+        }
 
     return {
         "subtotal": round(subtotal, 2),
-        "vat": round(vat, 2),
+        "vat": round(vat_total, 2),
+        "tax_summary": tax_summary,
         "line_items": enriched,
     }
 
@@ -334,7 +375,17 @@ def serialize_invoice(invoice: models.SalesInvoice):
 
 
 async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
-    # --- seller document resolution ---
+    # -------------------------
+    # Defaults (AUTHORITATIVE)
+    # -------------------------
+    invoice_date = payload.invoice_date or datetime.utcnow()
+    supply_date = payload.supply_date or invoice_date
+    invoice_type = payload.invoice_type or "TAX_INVOICE"
+    currency = payload.currency or "AED"
+
+    # -------------------------
+    # Seller document resolution
+    # -------------------------
     doc = None
     if payload.seller_doc_id is not None:
         res = await db.execute(
@@ -368,8 +419,7 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
             company_name_ar = doc.ct_legal_name_ar
             company_address = doc.ct_registered_address or doc.company_address
             company_trn = doc.ct_trn
-
-    if not doc:
+    else:
         company_name = payload.manual_seller_company_en or ""
         company_name_ar = payload.manual_seller_company_ar
         company_address = payload.manual_seller_address
@@ -378,6 +428,9 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
     if not company_name or not company_trn:
         return None
 
+    # -------------------------
+    # Buyer + invoice basics
+    # -------------------------
     if not payload.customer_name:
         payload.customer_name = "Cash Customer"
 
@@ -387,14 +440,19 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
     terms_obj = await get_terms(db, owner_id)
     terms_text = terms_obj.terms if terms_obj else ""
 
-    # --- manual invoice ---
+    # =========================================================
+    # MANUAL INVOICE (no line items from UI)
+    # =========================================================
     if not payload.line_items:
         total = round(float(payload.total or 0), 2)
         vat_pct = normalize_vat(getattr(payload, "manual_vat_percentage", 5))
-        subtotal = total / (1 + vat_pct / 100)
-        vat = total - subtotal
 
-        due_date = getattr(payload, "due_date", None) or datetime.utcnow()
+        # Correct VAT math
+        subtotal = round(total / (1 + vat_pct / 100), 2)
+        vat = round(total - subtotal, 2)
+
+        discount = payload.discount or 0
+        due_date = payload.due_date or datetime.utcnow()
         paid, paid_at, events = _prepare_initial_payment(payload, total)
 
         inv = models.SalesInvoice(
@@ -407,30 +465,48 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
             customer_name=payload.customer_name,
             customer_trn=payload.customer_trn,
             invoice_number=payload.invoice_number,
+            invoice_type=invoice_type,
+            currency=currency,
+            invoice_date=invoice_date,
+            supply_date=supply_date,
+            due_date=due_date,
             notes=payload.notes,
             terms_and_conditions=terms_text,
-            subtotal=round(subtotal, 2),
-            total_vat=round(vat, 2),
+            discount=discount,
+            tax_summary={
+                "categories": [
+                    {
+                        "vat_rate": vat_pct,
+                        "taxable_amount": subtotal,
+                        "vat_amount": vat,
+                        "category_code": vat_category_from_rate(vat_pct),
+                    }
+                ],
+                "total_vat": vat,
+            },
+            subtotal=subtotal,
+            total_vat=vat,
             total=total,
-            due_date=due_date,
             amount_paid=paid,
             last_payment_at=paid_at,
             payment_events=events or None,
         )
+
         db.add(inv)
         await db.commit()
         await db.refresh(inv)
 
+        # Single synthetic line item (gross = line_total)
         db.add(
             models.SalesInvoiceLineItem(
                 invoice_id=inv.id,
                 name="Standard Rated Supplies",
                 description="Standard Rated Supplies",
                 quantity=1,
-                unit_cost=round(subtotal, 2),
+                unit_cost=subtotal,
                 vat_percentage=vat_pct,
                 discount=0,
-                line_total=total,
+                line_total=total,  # tax-inclusive
             )
         )
         await db.commit()
@@ -438,7 +514,9 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
         await invoices_crud.create_invoice_from_sales(db, owner_id, inv)
         return inv
 
-    # --- product line invoice ---
+    # =========================================================
+    # PRODUCT LINE INVOICE
+    # =========================================================
     for li in payload.line_items:
         if li.product_id:
             res = await db.execute(
@@ -450,14 +528,15 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
             inv_item = res.scalar_one_or_none()
             if inv_item and inv_item.selling_price is not None:
                 li.unit_cost = inv_item.selling_price
-        # Normalize VAT code/value
+
         li.vat_percentage = normalize_vat(li.vat_percentage)
 
     totals = compute_line_item_totals(payload.line_items)
+
     discount = payload.discount or 0
     total = round(totals["subtotal"] + totals["vat"] - discount, 2)
 
-    due_date = getattr(payload, "due_date", None) or datetime.utcnow()
+    due_date = payload.due_date or datetime.utcnow()
     paid, paid_at, events = _prepare_initial_payment(payload, total)
 
     inv = models.SalesInvoice(
@@ -470,13 +549,18 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
         customer_name=payload.customer_name,
         customer_trn=payload.customer_trn,
         invoice_number=payload.invoice_number,
+        invoice_type=invoice_type,
+        currency=currency,
+        invoice_date=invoice_date,
+        supply_date=supply_date,
+        due_date=due_date,
         notes=payload.notes,
         terms_and_conditions=terms_text,
         discount=discount,
+        tax_summary=totals["tax_summary"],
         subtotal=totals["subtotal"],
         total_vat=totals["vat"],
         total=total,
-        due_date=due_date,
         amount_paid=paid,
         last_payment_at=paid_at,
         payment_events=events or None,
@@ -972,3 +1056,65 @@ async def list_tax_credit_notes(db, owner_id: int, limit: int = 1000, offset: in
     )
     notes = res.scalars().unique().all()
     return [_serialize_tax_credit_note(n) for n in notes]
+
+
+async def edit_inventory_item(
+    db, owner_id: int, iid: int, payload: schemas.InventoryItemEdit
+):
+    res = await db.execute(
+        select(models.SalesInventoryItem).where(
+            models.SalesInventoryItem.owner_id == owner_id,
+            models.SalesInventoryItem.id == iid,
+        )
+    )
+    inv = res.scalar_one_or_none()
+    if not inv:
+        return None
+
+    data = payload.dict(exclude_unset=True)
+
+    if "unique_code" in data:
+        data.pop("unique_code")
+
+    if "product_id" in data and data["product_id"] is not None:
+        pres = await db.execute(
+            select(models.SalesProduct).where(
+                models.SalesProduct.id == data["product_id"],
+                models.SalesProduct.owner_id == owner_id,
+            )
+        )
+        product = pres.scalar_one_or_none()
+        if product:
+            inv.product_id = product.id
+            if "product_name" not in data:
+                inv.product_name = product.name
+
+    for field, value in data.items():
+        if field == "product_id":
+            continue
+        if field == "quantity":
+            if value is None:
+                continue
+
+        setattr(inv, field, value)
+
+    await db.commit()
+    return inv
+
+
+async def adjust_inventory_quantity(db, owner_id: int, product_id: int, delta: float):
+    res = await db.execute(
+        select(models.SalesInventoryItem).where(
+            models.SalesInventoryItem.owner_id == owner_id,
+            models.SalesInventoryItem.product_id == product_id,
+        )
+    )
+    inv = res.scalar_one_or_none()
+
+    if not inv:
+        return None
+
+    inv.quantity = max((inv.quantity or 0) + delta, 0)
+
+    await db.commit()
+    return inv

@@ -527,7 +527,6 @@ def parse_batch_range(batch_name: str):
     except Exception:
         return None
 
-
 def parse_single_month_batch(name: str):
     """
     Parse 'Feb 2025' → (2, 2025)
