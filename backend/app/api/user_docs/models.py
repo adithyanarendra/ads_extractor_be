@@ -114,3 +114,4 @@ class UserDocs(Base):
     emirates_id_date_of_birth = Column(DateTime(timezone=True), nullable=True)
     emirates_id_issue_date = Column(DateTime(timezone=True), nullable=True)
     emirates_id_expiry_date = Column(DateTime(timezone=True), nullable=True)
+

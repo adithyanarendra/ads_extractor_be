@@ -13,6 +13,33 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from ...core.database import Base
 
+class SellerProfile(Base):
+    __tablename__ = "seller_profiles"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        unique=True,
+    )
+    doc_id = Column(
+        Integer, ForeignKey("user_docs.id", ondelete="RESTRICT"), nullable=False
+    )
+    doc_type = Column(String, nullable=True)
+
+    company_name_en = Column(String, nullable=False)
+    company_name_ar = Column(String, nullable=True)
+    company_trn = Column(String, nullable=False)
+    company_address = Column(String, nullable=True)
+    vat_registered = Column(Boolean, nullable=False, default=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
 
 class SalesProduct(Base):
     __tablename__ = "sales_products"

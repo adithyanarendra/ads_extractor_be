@@ -14,6 +14,7 @@ from typing import Optional, List
 
 from ...core.database import SessionLocal
 from .models import UserDocs
+from ..sales.models import SellerProfile
 from ..users.crud import get_user_by_id
 from ..batches import crud as batches_crud
 from ...utils.r2 import upload_to_r2_bytes, get_file_from_r2, delete_from_r2
@@ -25,6 +26,123 @@ from ...utils import doc_fields as fields
 from .schemas import DOC_SCHEMA_MAP, BaseDocSchema
 
 MONTH_MAP = {m.lower(): i for i, m in enumerate(month_abbr) if m}
+SELLER_DOC_TYPES = {"vat_certificate", "ct_certificate", "trade_license"}
+
+
+def _seller_profile_fields_from_doc(doc: UserDocs):
+    if doc.doc_type == "vat_certificate":
+        company_name_en = doc.vat_legal_name_english or doc.legal_name or ""
+        company_name_ar = doc.vat_legal_name_arabic
+        company_address = doc.vat_registered_address or doc.company_address
+        company_trn = doc.vat_tax_registration_number or ""
+    elif doc.doc_type == "ct_certificate":
+        company_name_en = doc.ct_legal_name_en or doc.legal_name or ""
+        company_name_ar = doc.ct_legal_name_ar
+        company_address = doc.ct_registered_address or doc.company_address
+        company_trn = doc.ct_trn or ""
+    elif doc.doc_type == "trade_license":
+        company_name_en = doc.tl_business_name_en or doc.legal_name or ""
+        company_name_ar = doc.tl_business_name_ar
+        company_address = doc.company_address
+        company_trn = doc.tl_registration_number or ""
+    else:
+        company_name_en = doc.legal_name or ""
+        company_name_ar = None
+        company_address = doc.company_address
+        company_trn = ""
+
+    vat_registered = bool(company_trn and company_trn.strip())
+
+    return {
+        "company_name_en": company_name_en,
+        "company_name_ar": company_name_ar,
+        "company_address": company_address,
+        "company_trn": company_trn,
+        "vat_registered": vat_registered,
+    }
+
+
+async def _get_seller_profile_by_user(db: AsyncSession, user_id: int):
+    result = await db.execute(
+        select(SellerProfile).where(SellerProfile.user_id == user_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_or_create_seller_profile(db: AsyncSession, user_id: int):
+    profile = await _get_seller_profile_by_user(db, user_id)
+    if profile:
+        return profile
+
+    result = await db.execute(
+        select(UserDocs).where(
+            UserDocs.user_id == user_id,
+            UserDocs.doc_type.in_(SELLER_DOC_TYPES),
+            UserDocs.is_processing == False,
+        )
+    )
+    docs = result.scalars().all()
+
+    if len(docs) != 1:
+        return None
+
+    doc = docs[0]
+    fields = _seller_profile_fields_from_doc(doc)
+    if not fields["company_name_en"] or not fields["company_trn"]:
+        return None
+    if not fields["company_name_en"] or not fields["company_trn"]:
+        return {
+            "ok": False,
+            "error": "Document missing seller details",
+        }
+    profile = SellerProfile(
+        user_id=user_id,
+        doc_id=doc.id,
+        doc_type=doc.doc_type,
+        **fields,
+    )
+    db.add(profile)
+    await db.commit()
+    await db.refresh(profile)
+    return profile
+
+
+async def set_seller_profile(db: AsyncSession, user_id: int, doc_id: int):
+    result = await db.execute(
+        select(UserDocs).where(
+            UserDocs.user_id == user_id,
+            UserDocs.id == doc_id,
+            UserDocs.doc_type.in_(SELLER_DOC_TYPES),
+            UserDocs.is_processing == False,
+        )
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        return {"ok": False, "error": "Document not found or not eligible"}
+
+    fields = _seller_profile_fields_from_doc(doc)
+
+    profile = await _get_seller_profile_by_user(db, user_id)
+    if profile:
+        profile.doc_id = doc.id
+        profile.doc_type = doc.doc_type
+        profile.company_name_en = fields["company_name_en"]
+        profile.company_name_ar = fields["company_name_ar"]
+        profile.company_address = fields["company_address"]
+        profile.company_trn = fields["company_trn"]
+        profile.vat_registered = fields["vat_registered"]
+    else:
+        profile = SellerProfile(
+            user_id=user_id,
+            doc_id=doc.id,
+            doc_type=doc.doc_type,
+            **fields,
+        )
+        db.add(profile)
+
+    await db.commit()
+    await db.refresh(profile)
+    return {"ok": True, "data": profile}
 
 def _allowed_update_keys_for_doc_type(doc_type: str):
     core_keys = {
@@ -230,6 +348,14 @@ async def delete_user_doc(db: AsyncSession, user_id: int, doc_id: int):
                 "ok": False,
                 "error": "Document not found",
                 "message": "Delete failed",
+            }
+
+        profile = await _get_seller_profile_by_user(db, user_id)
+        if profile and profile.doc_id == doc_id:
+            return {
+                "ok": False,
+                "error": "Document is used in Seller Profile",
+                "message": "Cannot delete a Seller Profile document",
             }
 
         await db.execute(

@@ -6,6 +6,8 @@ from io import BytesIO
 from ...core.database import get_db
 from ..invoices.routes import get_current_user
 from . import crud, schemas
+from ..user_docs import schemas as user_docs_schemas
+from ..user_docs import crud as user_docs_crud
 from .templates import renderer
 from .templates.renderer_escpos import render_invoice_escpos
 
@@ -19,6 +21,37 @@ async def get_next_invoice_number_api(
 ):
     number = await crud.get_next_invoice_number(db, current_user.effective_user_id)
     return {"ok": True, "data": number}
+
+
+@router.get("/seller_profile")
+async def get_seller_profile(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    profile = await user_docs_crud.get_or_create_seller_profile(
+        db, current_user.effective_user_id
+    )
+    if not profile:
+        return {"ok": True, "data": None}
+
+    data = user_docs_schemas.SellerProfileOut.from_orm(profile).dict()
+    return {"ok": True, "data": data}
+
+
+@router.put("/seller_profile")
+async def set_seller_profile(
+    payload: user_docs_schemas.SellerProfileSelect,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    res = await user_docs_crud.set_seller_profile(
+        db, current_user.effective_user_id, payload.doc_id
+    )
+    if not res.get("ok"):
+        return {"ok": False, "error": res.get("error", "Update failed")}
+
+    data = user_docs_schemas.SellerProfileOut.from_orm(res["data"]).dict()
+    return {"ok": True, "data": data}
 
 @router.get("/credit-notes/next-number")
 async def get_next_credit_note_number_api(

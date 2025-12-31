@@ -9,7 +9,7 @@ from . import models
 from . import schemas
 
 from ..invoices import crud as invoices_crud
-from ..user_docs.models import UserDocs
+from ..user_docs import crud as user_docs_crud
 from ...utils.r2 import s3, R2_BUCKET
 
 
@@ -384,49 +384,16 @@ async def create_invoice(db, owner_id, payload: schemas.SalesInvoiceCreate):
     currency = payload.currency or "AED"
 
     # -------------------------
-    # Seller document resolution
+    # Seller profile resolution
     # -------------------------
-    doc = None
-    if payload.seller_doc_id is not None:
-        res = await db.execute(
-            select(UserDocs).where(
-                UserDocs.user_id == owner_id,
-                UserDocs.id == payload.seller_doc_id,
-            )
-        )
-        doc = res.scalar_one_or_none()
-    else:
-        res = await db.execute(
-            select(UserDocs)
-            .where(
-                UserDocs.user_id == owner_id,
-                UserDocs.file_name.in_(["vat_certificate", "ct_certificate"]),
-            )
-            .order_by(UserDocs.updated_at.desc())
-        )
-        doc = res.scalars().first()
-
-    company_name = company_name_ar = company_address = company_trn = None
-
-    if doc:
-        if doc.doc_type == "vat_certificate":
-            company_name = doc.vat_legal_name_english or doc.legal_name
-            company_name_ar = doc.vat_legal_name_arabic
-            company_address = doc.vat_registered_address or doc.company_address
-            company_trn = doc.vat_tax_registration_number
-        elif doc.doc_type == "ct_certificate":
-            company_name = doc.ct_legal_name_en or doc.legal_name
-            company_name_ar = doc.ct_legal_name_ar
-            company_address = doc.ct_registered_address or doc.company_address
-            company_trn = doc.ct_trn
-    else:
-        company_name = payload.manual_seller_company_en or ""
-        company_name_ar = payload.manual_seller_company_ar
-        company_address = payload.manual_seller_address
-        company_trn = payload.manual_seller_trn or ""
-
-    if not company_name or not company_trn:
+    profile = await user_docs_crud.get_or_create_seller_profile(db, owner_id)
+    if not profile:
         return None
+
+    company_name = profile.company_name_en
+    company_name_ar = profile.company_name_ar
+    company_address = profile.company_address
+    company_trn = profile.company_trn
 
     # -------------------------
     # Buyer + invoice basics

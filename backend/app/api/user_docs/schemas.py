@@ -126,3 +126,23 @@ DOC_SCHEMA_MAP = {
     "passport": PassportSchema,
     "emirates_id": EmiratesIDSchema,
 }
+
+
+class SellerProfileSelect(BaseModel):
+    doc_id: int
+
+
+class SellerProfileOut(BaseModel):
+    id: int
+    user_id: int
+    doc_id: int
+    doc_type: Optional[str] = None
+    company_name_en: str
+    company_name_ar: Optional[str] = None
+    company_trn: str
+    company_address: Optional[str] = None
+    vat_registered: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
