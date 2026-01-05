@@ -71,39 +71,7 @@ async def _get_seller_profile_by_user(db: AsyncSession, user_id: int):
 
 async def get_or_create_seller_profile(db: AsyncSession, user_id: int):
     profile = await _get_seller_profile_by_user(db, user_id)
-    if profile:
-        return profile
-
-    result = await db.execute(
-        select(UserDocs).where(
-            UserDocs.user_id == user_id,
-            UserDocs.doc_type.in_(SELLER_DOC_TYPES),
-            UserDocs.is_processing == False,
-        )
-    )
-    docs = result.scalars().all()
-
-    if len(docs) != 1:
-        return None
-
-    doc = docs[0]
-    fields = _seller_profile_fields_from_doc(doc)
-    if not fields["company_name_en"] or not fields["company_trn"]:
-        return None
-    if not fields["company_name_en"] or not fields["company_trn"]:
-        return {
-            "ok": False,
-            "error": "Document missing seller details",
-        }
-    profile = SellerProfile(
-        user_id=user_id,
-        doc_id=doc.id,
-        doc_type=doc.doc_type,
-        **fields,
-    )
-    db.add(profile)
-    await db.commit()
-    await db.refresh(profile)
+    # Do not auto-create a profile from a single doc; require explicit selection/save.
     return profile
 
 
