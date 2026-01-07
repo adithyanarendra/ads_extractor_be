@@ -47,6 +47,8 @@ origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://aicountant.tech",
+    "https://www.aicountant.tech",
+    "https://app.aicountant.tech",
     "49.43.169.79",
     # NGROK - payment testing - to be removed later
     "https://embrasured-tristian-draughtiest.ngrok-free.dev",
@@ -69,18 +71,12 @@ app.include_router(
     companies_routes.router, dependencies=[Depends(require_active_subscription)]
 )
 app.include_router(lov_router, dependencies=[Depends(require_active_subscription)])
-app.include_router(
-    batches_router, dependencies=[Depends(require_active_subscription)]
-)
+app.include_router(batches_router, dependencies=[Depends(require_active_subscription)])
 app.include_router(
     user_docs_router, dependencies=[Depends(require_active_subscription)]
 )
-app.include_router(
-    reports_router, dependencies=[Depends(require_active_subscription)]
-)
-app.include_router(
-    quickbooks_routes.router
-)
+app.include_router(reports_router, dependencies=[Depends(require_active_subscription)])
+app.include_router(quickbooks_routes.router)
 app.include_router(
     statements_router, dependencies=[Depends(require_active_subscription)]
 )
