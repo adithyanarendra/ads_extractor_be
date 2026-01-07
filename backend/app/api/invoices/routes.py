@@ -193,6 +193,8 @@ async def review_invoice(
             )
             await db.commit()
             print(f"📦 Invoice {invoice.id} auto-assigned to batch {batch_id}")
+        # ensure the next set of quarterly batches exist for this user
+        await batches_crud.ensure_future_batches(db, current_user.effective_user_id)
 
     return {"ok": True, "msg": "Invoice review updated", "invoice_id": invoice.id}
 

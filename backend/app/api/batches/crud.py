@@ -586,6 +586,150 @@ async def find_matching_batch_for_invoice(
         return None
 
 
+# ------------------------------------------------------------------
+# AUTO-GENERATE FUTURE BATCHES (3-month cycles)
+# ------------------------------------------------------------------
+
+def _format_batch_name(start_month: int, start_year: int, end_month: int, end_year: int) -> str:
+    """Format batch name like 'Feb - Apr 2025' or cross-year 'Nov 2025 - Jan 2026'."""
+    start_name = month_abbr[start_month]
+    end_name = month_abbr[end_month]
+    if start_year == end_year:
+        return f"{start_name} - {end_name} {end_year}"
+    return f"{start_name} {start_year} - {end_name} {end_year}"
+
+
+def _next_quarter_ranges(current_end_month: int, current_end_year: int) -> List[Dict[str, int]]:
+    """
+    Given the end month/year of the latest batch, return the next four 3-month ranges.
+    Months are 1-based (Jan=1).
+    """
+    ranges = []
+    start_month = current_end_month % 12 + 1
+    start_year = current_end_year if start_month > current_end_month else current_end_year + 1
+
+    for _ in range(4):
+        end_month = (start_month + 2 - 1) % 12 + 1  # 3-month window
+        end_year = start_year if end_month >= start_month else start_year + 1
+        ranges.append(
+            {
+                "start_month": start_month,
+                "end_month": end_month,
+                "start_year": start_year,
+                "end_year": end_year,
+            }
+        )
+        # move to next quarter
+        start_month = end_month % 12 + 1
+        start_year = end_year if start_month > end_month else end_year + 1
+
+    return ranges
+
+
+async def _create_child_batches_for_range(
+    db: AsyncSession,
+    owner_id: int,
+    parent_id: int,
+    start_month: int,
+    end_month: int,
+    start_year: int,
+    end_year: int,
+):
+    """Create monthly child batches for a 3-month parent range."""
+    month = start_month
+    year = start_year
+
+    while True:
+        child_name = f"{month_abbr[month]} {year}"
+        try:
+            await create_batch(
+                db,
+                name=child_name,
+                owner_id=owner_id,
+                invoice_ids=None,
+                batch_year=year,
+                parent_id=parent_id,
+            )
+        except Exception:
+            # ignore duplicates
+            pass
+
+        if year == end_year and month == end_month:
+            break
+
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+
+
+async def ensure_future_batches(db: AsyncSession, owner_id: int):
+    """
+    If the latest parent batch has ended (or ends this month), create the next 4 quarterly batches
+    and their monthly children. Skips duplicates.
+    """
+    result = await db.execute(
+        select(models.Batch)
+        .where(models.Batch.owner_id == owner_id, models.Batch.parent_id.is_(None))
+        .order_by(models.Batch.created_at.desc())
+        .limit(1)
+    )
+    latest = result.scalar_one_or_none()
+    if not latest:
+        return
+
+    parsed = parse_batch_range(latest.name)
+    if not parsed:
+        return
+
+    start_month, end_month, start_year, end_year = parsed
+
+    now = datetime.now(timezone.utc)
+    # Trigger when we are within the last month of the latest batch (or later)
+    current_index = now.year * 12 + now.month
+    end_index = end_year * 12 + end_month
+    if current_index < end_index - 1:
+        return
+
+    next_ranges = _next_quarter_ranges(end_month, end_year)
+
+    for r in next_ranges:
+        parent_name = _format_batch_name(
+            r["start_month"], r["start_year"], r["end_month"], r["end_year"]
+        )
+        parent_id = None
+        res = await create_batch(
+            db,
+            name=parent_name,
+            owner_id=owner_id,
+            invoice_ids=None,
+            batch_year=r["end_year"],
+            parent_id=None,
+        )
+        if res.get("ok"):
+            parent_id = res["data"]["id"]
+        else:
+            # try to fetch existing if duplicate
+            existing = (
+                await db.execute(
+                    select(models.Batch).where(
+                        models.Batch.owner_id == owner_id, models.Batch.name == parent_name
+                    )
+                )
+            ).scalar_one_or_none()
+            parent_id = existing.id if existing else None
+
+        if parent_id:
+            await _create_child_batches_for_range(
+                db,
+                owner_id,
+                parent_id,
+                r["start_month"],
+                r["end_month"],
+                r["start_year"],
+                r["end_year"],
+            )
+
 async def remove_invoice_from_batch(
     db: AsyncSession, batch_id: int, invoice_id: int, owner_id: int
 ):

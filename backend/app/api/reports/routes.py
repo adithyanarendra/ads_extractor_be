@@ -1,16 +1,26 @@
+from datetime import datetime
+from typing import Dict, Optional
+
 from fastapi import APIRouter, Depends, status, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.database import get_db
 from ..invoices.routes import get_current_user
 from . import crud as reports_crud
+from .pdf_renderer import render_pnl_report_pdf, render_vat_report_pdf
 
 from ...utils.r2 import upload_to_r2_bytes, get_file_from_r2
 
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+
+
+class ReportPDFStoreRequest(BaseModel):
+    report_data: Dict[str, Optional[object]]
+    report_name: Optional[str] = None
 
 
 @router.get("/generate/vat_summary")
@@ -101,6 +111,51 @@ async def upload_report(
         return {
             "ok": False,
             "message": "Upload failed",
+            "error": str(e),
+            "data": None,
+        }
+
+
+def _render_report_pdf(report_type: str, data: Dict[str, Optional[object]]) -> bytes:
+    if report_type == "vat_pdf":
+        return render_vat_report_pdf(data)
+    if report_type == "pnl_pdf":
+        return render_pnl_report_pdf(data)
+
+    raise HTTPException(status_code=400, detail="Unsupported PDF type")
+
+
+@router.post("/store/{type}")
+async def store_generated_pdf(
+    type: str,
+    payload: ReportPDFStoreRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    try:
+        report_data = dict(payload.report_data or {})
+        report_data.setdefault("generated_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M"))
+        pdf_bytes = _render_report_pdf(type, report_data)
+        timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        name = payload.report_name or f"{timestamp}_{type}.pdf"
+        filename = f"{current_user.effective_user_id}/{type}/{name}"
+        file_url = upload_to_r2_bytes(pdf_bytes, filename)
+
+        result = await reports_crud.create_report(
+            db,
+            user_id=current_user.effective_user_id,
+            report_name=name,
+            type=type,
+            file_path=file_url,
+        )
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {
+            "ok": False,
+            "message": "Failed to generate report PDF",
             "error": str(e),
             "data": None,
         }
