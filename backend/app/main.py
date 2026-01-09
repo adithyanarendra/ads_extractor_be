@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic_core import CoreSchema, core_schema
 from pydantic import GetCoreSchemaHandler
 from typing import Any
+from app.api.analytics.routes import router as analytics_router
 
 
 class AssumedAsyncSession:
@@ -22,6 +23,7 @@ AsyncSession.__get_pydantic_core_schema__ = (
 
 
 from .core.database import engine, Base
+from .core.enforcement import require_active_subscription
 from app.api.lov.routes import router as lov_router
 from .api.users import routes as users_routes
 from .api.invoices import routes as invoices_routes
@@ -35,7 +37,8 @@ from .api.accounting.routes import router as accounting_router
 from .api.sales.routes import router as sales_invoices_router
 from .api.suppliers.routes import router as suppliers_router
 from .api.payments.routes import router as payments_router
-from .core.enforcement import require_active_subscription
+from .api.registration.routes import router as registration_router
+from .api.registration.admin.routes_admin import router as registration_admin_router
 
 
 app = FastAPI(title="FastAPI Invoice OCR")
@@ -87,6 +90,8 @@ app.include_router(
 app.include_router(
     suppliers_router, dependencies=[Depends(require_active_subscription)]
 )
+app.include_router(registration_router)
+app.include_router(registration_admin_router)
 
 
 @app.get("/")
@@ -115,3 +120,6 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     await engine.dispose()
+
+
+app.include_router(analytics_router, tags=["Analytics"])

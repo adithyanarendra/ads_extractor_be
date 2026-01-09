@@ -90,3 +90,18 @@ async def delete_qb_tokens(db: AsyncSession) -> bool:
     await db.delete(token_record)
     await db.commit()
     return True
+
+def qb_base_url():
+    return (
+        "https://quickbooks.api.intuit.com"
+        if ENVIRONMENT == "production"
+        else "https://sandbox-quickbooks.api.intuit.com"
+    )
+
+
+def qb_headers(access_token: str):
+    return {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }

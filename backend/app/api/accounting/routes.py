@@ -417,3 +417,11 @@ async def zoho_disconnect(
         "success": True,
         "message": "Disconnected from Zoho Books"
     }
+
+@router.get("/zoho/simple-status")
+async def zoho_simple_status(
+    user: User = Depends(get_current_user),
+):
+    return {
+        "connected": bool(user.is_zb_connected)
+    }

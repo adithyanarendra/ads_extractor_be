@@ -1,8 +1,11 @@
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update, delete, or_, desc, func, select
 import re
 from typing import Optional, Dict
+
+from app.api.analytics.utils import compute_sales_analytics
 from . import models as invoices_models
 from datetime import datetime, date
 import asyncio
@@ -12,7 +15,17 @@ from app.api.invoices.models import Invoice
 from ..suppliers import crud as suppliers_crud
 from ..users.crud import get_connection_status
 from ..batches import crud as batches_crud
-
+from datetime import datetime, timedelta
+from sqlalchemy.future import select
+from collections import Counter
+from app.api.quickbooks.client import (
+    get_valid_access_token,
+    qb_base_url,
+    qb_headers,
+)
+from app.api.accounting.crud import get_connection
+from app.api.accounting.models import AccountingConnection, ProviderEnum, ConnStatusEnum
+from app.api.accounting.zoho_client import ZohoClient
 
 def sanitize_total(value):
     """Extracts numeric value from string safely."""
@@ -872,3 +885,439 @@ async def get_invoice_by_sales_id(db: AsyncSession, sales_invoice_id: int):
         select(Invoice).where(Invoice.source_sales_invoice_id == sales_invoice_id)
     )
     return res.scalar_one_or_none()
+
+async def get_internal_expense_analytics(
+    db: AsyncSession,
+    owner_id: int,
+    days: int = 30,
+):
+    cutoff_date = datetime.utcnow() - timedelta(days=days)
+
+    stmt = select(
+        Invoice.vendor_name,
+        Invoice.total,
+        Invoice.invoice_date,
+        Invoice.is_paid,
+    ).where(
+        Invoice.owner_id == owner_id,
+        Invoice.type == "expense",
+        Invoice.is_deleted == False,
+        Invoice.source_sales_invoice_id.is_(None),
+    )
+
+    result = await db.execute(stmt)
+    invoices = result.all()
+
+    total_expenses = 0.0
+    expense_count = 0
+    vendors = set()
+    vendor_totals = Counter()
+    cost_due_today = 0.0
+
+    for inv in invoices:
+        if not inv.invoice_date:
+            continue
+
+        try:
+            invoice_date = datetime.strptime(inv.invoice_date, "%d-%m-%Y")
+        except ValueError:
+            continue
+
+        if invoice_date < cutoff_date:
+            continue
+
+        amount = sanitize_total(inv.total)
+
+        total_expenses += amount
+        expense_count += 1
+
+        if inv.vendor_name:
+            vendors.add(inv.vendor_name)
+            vendor_totals[inv.vendor_name] += amount
+
+        if inv.is_paid is False:
+            cost_due_today += amount
+
+    top_vendor = vendor_totals.most_common(1)
+    top_vendor_data = {
+        "name": top_vendor[0][0] if top_vendor else None,
+        "amount": round(top_vendor[0][1], 2) if top_vendor else 0.0,
+    }
+
+    return {
+        "range_days": days,
+        "expense_count": expense_count,
+        "total_expenses": round(total_expenses, 2),
+        "vendors_count": len(vendors),
+        "cost_due_today": round(cost_due_today, 2),
+        "top_vendor": top_vendor_data,
+    }
+
+async def get_qb_expense_analytics(
+    db: AsyncSession,
+    owner_id: int,
+    days: int = 30,
+):
+    """
+    Expense analytics from QuickBooks Bills
+    """
+
+    access_token, realm_id = await get_valid_access_token(db)
+    if not access_token or not realm_id:
+        return {
+            "range_days": days,
+            "expense_count": 0,
+            "total_expenses": 0.0,
+            "vendors_count": 0,
+            "cost_due_today": 0.0,
+            "top_vendor": {"name": None, "amount": 0.0},
+        }
+
+    cutoff_date = (datetime.utcnow() - timedelta(days=days)).date().isoformat()
+
+    qb_query = f"""
+        SELECT Id, TxnDate, TotalAmt, Balance, VendorRef
+        FROM Bill
+        WHERE TxnDate >= '{cutoff_date}'
+    """
+
+    base_url = qb_base_url()
+    query_url = f"{base_url}/v3/company/{realm_id}/query"
+
+    headers = qb_headers(access_token)
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            query_url,
+            headers=headers,
+            params={"query": qb_query}
+        )
+        resp.raise_for_status()
+
+    bills = resp.json().get("QueryResponse", {}).get("Bill", [])
+
+    total_expenses = 0.0
+    expense_count = 0
+    vendors = set()
+    vendor_totals = Counter()
+    cost_due_today = 0.0
+
+    for bill in bills:
+        amount = float(bill.get("TotalAmt", 0))
+        balance = float(bill.get("Balance", 0))
+        vendor = (bill.get("VendorRef") or {}).get("name")
+
+        total_expenses += amount
+        expense_count += 1
+
+        if vendor:
+            vendors.add(vendor)
+            vendor_totals[vendor] += amount
+
+        if balance > 0:
+            cost_due_today += balance
+
+    top_vendor = vendor_totals.most_common(1)
+    top_vendor_data = {
+        "name": top_vendor[0][0] if top_vendor else None,
+        "amount": round(top_vendor[0][1], 2) if top_vendor else 0.0,
+    }
+
+    return {
+        "range_days": days,
+        "expense_count": expense_count,
+        "total_expenses": round(total_expenses, 2),
+        "vendors_count": len(vendors),
+        "cost_due_today": round(cost_due_today, 2),
+        "top_vendor": top_vendor_data,
+    }
+
+async def get_zb_expense_analytics(
+    db: AsyncSession,
+    owner_id: int,
+    days: int = 30,
+):
+    """
+    Expense analytics from Zoho Books (Bills)
+    Uses ZohoClient like rest of the system
+    """
+
+    conn = await get_connection(
+        db=db,
+        org_id=owner_id,
+        provider=ProviderEnum.zoho,
+    )
+
+    print("Conn:", bool(conn))
+    if conn:
+        print("Status:", conn.status)
+        print("Access Token:", bool(conn.access_token))
+        print("Org Id:", conn.external_org_id)
+
+    if (
+        not conn
+        or conn.status != ConnStatusEnum.connected
+        or not conn.access_token
+    ):
+        return {
+            "range_days": days,
+            "expense_count": 0,
+            "total_expenses": 0.0,
+            "vendors_count": 0,
+            "cost_due_today": 0.0,
+            "top_vendor": {"name": None, "amount": 0.0},
+        }
+
+    date_end = datetime.utcnow().strftime("%Y-%m-%d")
+    date_start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    client = ZohoClient(conn.access_token, conn.external_org_id)
+    response = client.get_bills(date_start, date_end)
+
+    if not isinstance(response, dict) or "bills" not in response:
+        return {
+            "range_days": days,
+            "expense_count": 0,
+            "total_expenses": 0.0,
+            "vendors_count": 0,
+            "cost_due_today": 0.0,
+            "top_vendor": {"name": None, "amount": 0.0},
+        }
+
+    bills = response.get("bills", [])
+
+    total_expenses = 0.0
+    expense_count = 0
+    vendors = set()
+    vendor_totals = Counter()
+    cost_due_today = 0.0
+
+    for bill in bills:
+        amount = float(bill.get("total", 0) or 0)
+        balance = float(bill.get("balance", 0) or 0)
+        vendor = bill.get("vendor_name")
+
+        total_expenses += amount
+        expense_count += 1
+
+        if vendor:
+            vendors.add(vendor)
+            vendor_totals[vendor] += amount
+
+        if balance > 0:
+            cost_due_today += balance
+
+    top_vendor = vendor_totals.most_common(1)
+    top_vendor_data = {
+        "name": top_vendor[0][0] if top_vendor else None,
+        "amount": round(top_vendor[0][1], 2) if top_vendor else 0.0,
+    }
+
+    return {
+        "range_days": days,
+        "expense_count": expense_count,
+        "total_expenses": round(total_expenses, 2),
+        "vendors_count": len(vendors),
+        "cost_due_today": round(cost_due_today, 2),
+        "top_vendor": top_vendor_data,
+    }
+
+async def list_unpaid_sales_invoices(db: AsyncSession, owner_id: int):
+    Invoice = invoices_models.Invoice
+
+    stmt = (
+        select(Invoice)
+        .where(
+            Invoice.owner_id == owner_id,
+            Invoice.type == "sales",
+            Invoice.is_deleted == False,
+            Invoice.is_paid == False,
+        )
+        .order_by(desc(Invoice.created_at))
+    )
+
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+async def get_internal_sales_analytics(
+    db: AsyncSession,
+    owner_id: int,
+    days: int = 30,
+):
+    stmt = select(Invoice).where(
+        Invoice.owner_id == owner_id,
+        Invoice.type == "sales",
+        Invoice.is_deleted == False,
+        Invoice.source_sales_invoice_id.is_(None),
+    )
+
+    result = await db.execute(stmt)
+    invoices = result.scalars().all()
+
+    stats = compute_sales_analytics(invoices, days)
+
+    return {
+        "range_days": days,
+        **stats,
+    }
+
+async def get_qb_sales_analytics(
+    db: AsyncSession,
+    owner_id: int,
+    days: int = 30,
+):
+    """
+    Sales analytics from QuickBooks Invoices
+    """
+
+    access_token, realm_id = await get_valid_access_token(db)
+    if not access_token or not realm_id:
+        return {
+            "range_days": days,
+            "sales_count": 0,
+            "total_sales": 0.0,
+            "customers_count": 0,
+            "amount_receivable": 0.0,
+            "top_customer": {"name": None, "amount": 0.0},
+        }
+
+    cutoff_date = (datetime.utcnow() - timedelta(days=days)).date().isoformat()
+
+    qb_query = f"""
+        SELECT Id, TxnDate, TotalAmt, Balance, CustomerRef
+        FROM Invoice
+        WHERE TxnDate >= '{cutoff_date}'
+    """
+
+    base_url = qb_base_url()
+    query_url = f"{base_url}/v3/company/{realm_id}/query"
+    headers = qb_headers(access_token)
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            query_url,
+            headers=headers,
+            params={"query": qb_query},
+        )
+        resp.raise_for_status()
+
+    invoices = resp.json().get("QueryResponse", {}).get("Invoice", [])
+
+    total_sales = 0.0
+    sales_count = 0
+    customers = set()
+    customer_totals = Counter()
+    amount_receivable = 0.0
+
+    for inv in invoices:
+        amount = float(inv.get("TotalAmt", 0) or 0)
+        balance = float(inv.get("Balance", 0) or 0)
+        customer = (inv.get("CustomerRef") or {}).get("name")
+
+        total_sales += amount
+        sales_count += 1
+
+        if customer:
+            customers.add(customer)
+            customer_totals[customer] += amount
+
+        if balance > 0:
+            amount_receivable += balance
+
+    top_customer = customer_totals.most_common(1)
+    top_customer_data = {
+        "name": top_customer[0][0] if top_customer else None,
+        "amount": round(top_customer[0][1], 2) if top_customer else 0.0,
+    }
+
+    return {
+        "range_days": days,
+        "sales_count": sales_count,
+        "total_sales": round(total_sales, 2),
+        "customers_count": len(customers),
+        "amount_receivable": round(amount_receivable, 2),
+        "top_customer": top_customer_data,
+    }
+
+async def get_zb_sales_analytics(
+    db: AsyncSession,
+    owner_id: int,
+    days: int = 30,
+):
+    """
+    Sales analytics from Zoho Books Invoices
+    """
+
+    conn = await get_connection(
+        db=db,
+        org_id=owner_id,
+        provider=ProviderEnum.zoho,
+    )
+
+    if (
+        not conn
+        or conn.status != ConnStatusEnum.connected
+        or not conn.access_token
+    ):
+        return {
+            "range_days": days,
+            "sales_count": 0,
+            "total_sales": 0.0,
+            "customers_count": 0,
+            "amount_receivable": 0.0,
+            "top_customer": {"name": None, "amount": 0.0},
+        }
+
+    date_end = datetime.utcnow().strftime("%Y-%m-%d")
+    date_start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    client = ZohoClient(conn.access_token, conn.external_org_id)
+    response = client.get_invoices(date_start, date_end)
+
+    if not isinstance(response, dict) or "invoices" not in response:
+        return {
+            "range_days": days,
+            "sales_count": 0,
+            "total_sales": 0.0,
+            "customers_count": 0,
+            "amount_receivable": 0.0,
+            "top_customer": {"name": None, "amount": 0.0},
+        }
+
+    invoices = response.get("invoices", [])
+
+    total_sales = 0.0
+    sales_count = 0
+    customers = set()
+    customer_totals = Counter()
+    amount_receivable = 0.0
+
+    for inv in invoices:
+        amount = float(inv.get("total", 0) or 0)
+        balance = float(inv.get("balance", 0) or 0)
+        customer = inv.get("customer_name")
+
+        total_sales += amount
+        sales_count += 1
+
+        if customer:
+            customers.add(customer)
+            customer_totals[customer] += amount
+
+        if balance > 0:
+            amount_receivable += balance
+
+    top_customer = customer_totals.most_common(1)
+    top_customer_data = {
+        "name": top_customer[0][0] if top_customer else None,
+        "amount": round(top_customer[0][1], 2) if top_customer else 0.0,
+    }
+
+    return {
+        "range_days": days,
+        "sales_count": sales_count,
+        "total_sales": round(total_sales, 2),
+        "customers_count": len(customers),
+        "amount_receivable": round(amount_receivable, 2),
+        "top_customer": top_customer_data,
+    }

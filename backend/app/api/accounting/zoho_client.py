@@ -26,7 +26,21 @@ class ZohoClient:
             return response.json()
         except Exception as e:
             return {"error": str(e)}
-    
+        
+    def get_bills(self, date_start: str, date_end: str) -> Dict:
+        """Fetch bills from Zoho Books"""
+        try:
+            url = f"{self.base_url}/bills"
+            params = {
+                "organization_id": self.org_id,
+                "date_start": date_start,
+                "date_end": date_end,
+            }
+            response = requests.get(url, headers=self.headers, params=params)
+            return response.json()
+        except Exception as e:
+            return {"error": str(e)}
+
     def get_or_create_customer(self, customer_name: str) -> Optional[str]:
         """Get customer or create if doesn't exist (for Sales invoices)"""
         try:
@@ -269,3 +283,17 @@ class ZohoClient:
                 )
 
         return summary
+
+    def get_invoices(self, date_start: str, date_end: str) -> Dict:
+        """Fetch sales invoices from Zoho Books"""
+        try:
+            url = f"{self.base_url}/invoices"
+            params = {
+                "organization_id": self.org_id,
+                "date_start": date_start,
+                "date_end": date_end,
+            }
+            response = requests.get(url, headers=self.headers, params=params)
+            return response.json()
+        except Exception as e:
+            return {"error": str(e)}

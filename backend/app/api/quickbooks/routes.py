@@ -148,7 +148,7 @@ async def quickbooks_callback(request: Request, db: AsyncSession = Depends(get_d
     code = request.query_params.get("code")
     realm_id = request.query_params.get("realmId")
     token = request.query_params.get("state")
-    redirect_url = f"{FRONTEND_REDIRECT_URL}?view=expense"
+    redirect_url = f"{FRONTEND_REDIRECT_URL}"
 
     if not code or not token:
         return RedirectResponse(url=f"{redirect_url}&error=missing_params")
