@@ -30,6 +30,9 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
     name: Optional[str] = None
+    is_admin: bool = False
+    is_accountant: bool = False
+    skip_payment_check: bool = False
 
 
 class UserLogin(BaseModel):
@@ -54,7 +57,10 @@ class ResetPasswordRequest(BaseModel):
 class UpdateUserRequest(BaseModel):
     user_id: Optional[int] = None
     name: Optional[str] = None
+    password: Optional[str] = None
+    is_admin: Optional[bool] = None
     is_accountant: Optional[bool] = None
+    skip_payment_check: Optional[bool] = None
     currency: Optional[CurrencyEnum] = None
 
 

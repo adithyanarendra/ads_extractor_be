@@ -36,15 +36,21 @@ async def create_user(
     password: str,
     name: Optional[str] = None,
     created_by: Optional[int] = None,
+    is_admin: bool = False,
+    is_accountant: bool = False,
+    skip_payment_check: bool = False,
 ) -> users_models.User:
     hashed = get_password_hash(password)
     first_user = await db.execute(select(users_models.User))
     first_user_exists = first_user.scalars().first() is not None
+    effective_is_admin = is_admin if first_user_exists else True
     user = users_models.User(
         email=email,
         hashed_password=hashed,
         name=name,
-        is_admin=False if first_user_exists else True,
+        is_admin=effective_is_admin,
+        is_accountant=is_accountant,
+        skip_payment_check=skip_payment_check,
         created_by=created_by,
         updated_by=created_by,
         last_updated_by=created_by,

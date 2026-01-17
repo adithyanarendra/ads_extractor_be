@@ -77,6 +77,9 @@ async def update_invoice_after_processing(
 
     if not invoice:
         return None
+    
+    if invoice.is_valid is False:
+        return invoice
 
     invoice.file_path = file_url
     invoice.vendor_name = parsed_fields.get("vendor_name")
@@ -144,15 +147,14 @@ async def mark_invoice_failed(
     invoice = result.scalar_one_or_none()
     if not invoice:
         return None
-
+    
+    invoice.is_valid = False
+    invoice.extraction_status = "invalid"
     invoice.is_processing = False
-    invoice.remarks = "Parsing failed"
-    invoice.extraction_status = "failed"
     if file_path:
         invoice.file_path = file_path
     await db.commit()
     return invoice
-
 
 async def retry_invoice_extraction(
     db: AsyncSession, invoice_id: int, parsed_fields: Dict[str, Optional[str]]
@@ -164,6 +166,9 @@ async def retry_invoice_extraction(
     invoice = result.scalar_one_or_none()
     if not invoice:
         return None
+    
+    if invoice.is_valid is False:
+        return invoice
 
     invoice.vendor_name = parsed_fields.get("vendor_name")
     invoice.invoice_number = parsed_fields.get("invoice_number")
@@ -260,6 +265,8 @@ async def list_archived_expense_invoices(
         Invoice.owner_id == owner_id,
         Invoice.is_deleted == False,
         Invoice.type == "expense",
+        Invoice.is_valid == True
+
     )
 
     stmt = stmt.where(Invoice.invoice_date.op("~")(r"^\d{2}-\d{2}-\d{4}$"))
@@ -319,6 +326,8 @@ async def list_invoices_by_owner(
         invoices_models.Invoice.is_deleted == False,
         or_(Invoice.is_published == False, Invoice.is_published.is_(None)),
         invoices_models.Invoice.source_sales_invoice_id.is_(None),
+        invoices_models.Invoice.is_valid == True,
+
     )
 
     if invoice_type:
@@ -370,6 +379,7 @@ async def list_invoices_to_review_by_owner(db: AsyncSession, owner_id: int):
         invoices_models.Invoice.owner_id == owner_id,
         invoices_models.Invoice.reviewed == False,
         invoices_models.Invoice.extraction_status == "success",
+        invoices_models.Invoice.is_valid == True,
         Invoice.is_deleted == False,
         Invoice.source_sales_invoice_id.is_(None),
     )
@@ -385,11 +395,15 @@ async def update_invoice_review(
     corrected_fields: Dict[str, Optional[str]] | None = None,
 ):
     invoice = await get_invoice_by_id_and_owner(db, invoice_id, owner_id)
-    if invoice.source_sales_invoice_id is not None:
-        return None
-
     if not invoice:
         return None
+    
+    if invoice.source_sales_invoice_id is not None:
+        return None
+    
+    if invoice.is_valid is False:
+        return None
+
     invoice.reviewed = reviewed
     if corrected_fields:
         allowed = {
@@ -445,6 +459,9 @@ async def set_invoice_coa(
     invoice = await get_invoice_by_id_and_owner(db, invoice_id, owner_id)
     if not invoice:
         return False
+    
+    if invoice.is_valid is False:
+        return False
 
     invoice.chart_of_account_id = chart_of_account_id
     invoice.chart_of_account_name = chart_of_account_name
@@ -461,11 +478,13 @@ async def edit_invoice(
     corrected_fields: Dict[str, Optional[str]],
 ):
     invoice = await get_invoice_by_id_and_owner(db, invoice_id, owner_id)
-
+    if not invoice:
+        return None
+    
     if invoice.source_sales_invoice_id is not None:
         return None
 
-    if not invoice:
+    if invoice.is_valid is False:
         return None
 
     allowed = {
@@ -556,6 +575,12 @@ async def run_invoice_extraction(
     Uses SessionLocal from your database.py for correct async context management.
     """
     async with SessionLocal() as db:
+        invoice = await get_invoice_by_id(db, invoice_id)
+
+        if invoice and invoice.is_valid is False:
+            print(f"Invoice {invoice_id} is invalid. Skipping extraction.")
+            return
+
         try:
             print("processing invoice")
             parsed_fields = await asyncio.get_event_loop().run_in_executor(
@@ -574,13 +599,23 @@ async def run_invoice_extraction(
                 parsed_fields.get("tax_amount"),
                 parsed_fields.get("total"),
             ]
+
+            doc_type = classify_document(parsed_fields)
+
+            if doc_type == "invalid":
+                invoice.is_valid = False
+                invoice.extraction_status = "invalid_document"
+                invoice.is_processing = False
+                await db.commit()
+                return
+            
             all_null = all(v in [None, ""] for v in field_values)
 
             if all_null:
                 await mark_invoice_failed(db, invoice_id, file_url)
                 print(f"⚠️ Invoice {invoice_id} extraction failed — all fields empty.")
                 return
-            print("calling update invoice function")
+            
             await update_invoice_after_processing(
                 db, invoice_id, parsed_fields, file_url
             )
@@ -590,7 +625,6 @@ async def run_invoice_extraction(
         except Exception as e:
             print(f"❌ Background extraction failed for invoice {invoice_id}: {e}")
             await mark_invoice_failed(db, invoice_id, file_url)
-
 
 async def get_invoice_analytics(db: AsyncSession, owner_id: int):
     result = await db.execute(
@@ -602,6 +636,7 @@ async def get_invoice_analytics(db: AsyncSession, owner_id: int):
             invoices_models.Invoice.owner_id == owner_id,
             Invoice.is_deleted == False,
             Invoice.source_sales_invoice_id.is_(None),
+            Invoice.is_valid == True,
         )
     )
 
@@ -818,6 +853,8 @@ async def list_unpaid_expense_invoices(db: AsyncSession, owner_id: int):
             Invoice.type == "expense",
             Invoice.is_deleted == False,
             Invoice.is_paid == False,
+            Invoice.is_valid == True
+
         )
         .order_by(desc(Invoice.created_at))
     )
@@ -890,8 +927,15 @@ async def get_internal_expense_analytics(
     db: AsyncSession,
     owner_id: int,
     days: int = 30,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
 ):
-    cutoff_date = datetime.utcnow() - timedelta(days=days)
+    if from_date and to_date:
+        start_date = datetime.combine(from_date, datetime.min.time())
+        end_date = datetime.combine(to_date, datetime.max.time())
+    else:
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
 
     stmt = select(
         Invoice.vendor_name,
@@ -902,7 +946,7 @@ async def get_internal_expense_analytics(
         Invoice.owner_id == owner_id,
         Invoice.type == "expense",
         Invoice.is_deleted == False,
-        Invoice.source_sales_invoice_id.is_(None),
+        Invoice.is_valid == True,
     )
 
     result = await db.execute(stmt)
@@ -923,7 +967,7 @@ async def get_internal_expense_analytics(
         except ValueError:
             continue
 
-        if invoice_date < cutoff_date:
+        if invoice_date < start_date or invoice_date > end_date:
             continue
 
         amount = sanitize_total(inv.total)
@@ -945,27 +989,29 @@ async def get_internal_expense_analytics(
     }
 
     return {
-        "range_days": days,
+        "range_days": None if (from_date and to_date) else days,
         "expense_count": expense_count,
         "total_expenses": round(total_expenses, 2),
         "vendors_count": len(vendors),
         "cost_due_today": round(cost_due_today, 2),
         "top_vendor": top_vendor_data,
+        "from_date": from_date,
+        "to_date": to_date,
     }
 
 async def get_qb_expense_analytics(
     db: AsyncSession,
     owner_id: int,
     days: int = 30,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
 ):
-    """
-    Expense analytics from QuickBooks Bills
-    """
-
     access_token, realm_id = await get_valid_access_token(db)
     if not access_token or not realm_id:
         return {
-            "range_days": days,
+            "range_days": None if (from_date and to_date) else days,
+            "from_date": from_date,
+            "to_date": to_date,
             "expense_count": 0,
             "total_expenses": 0.0,
             "vendors_count": 0,
@@ -973,14 +1019,19 @@ async def get_qb_expense_analytics(
             "top_vendor": {"name": None, "amount": 0.0},
         }
 
-    cutoff_date = (datetime.utcnow() - timedelta(days=days)).date().isoformat()
+    # Fixed Date Logic
+    if from_date and to_date:
+        date_start = from_date.isoformat()
+        date_end = to_date.isoformat()
+    else:
+        date_end = datetime.utcnow().date().isoformat()
+        date_start = (datetime.utcnow() - timedelta(days=days)).date().isoformat()
 
     qb_query = f"""
         SELECT Id, TxnDate, TotalAmt, Balance, VendorRef
         FROM Bill
-        WHERE TxnDate >= '{cutoff_date}'
+        WHERE TxnDate >= '{date_start}' AND TxnDate <= '{date_end}'
     """
-
     base_url = qb_base_url()
     query_url = f"{base_url}/v3/company/{realm_id}/query"
 
@@ -1036,31 +1087,16 @@ async def get_zb_expense_analytics(
     db: AsyncSession,
     owner_id: int,
     days: int = 30,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
 ):
-    """
-    Expense analytics from Zoho Books (Bills)
-    Uses ZohoClient like rest of the system
-    """
-
-    conn = await get_connection(
-        db=db,
-        org_id=owner_id,
-        provider=ProviderEnum.zoho,
-    )
-
-    print("Conn:", bool(conn))
-    if conn:
-        print("Status:", conn.status)
-        print("Access Token:", bool(conn.access_token))
-        print("Org Id:", conn.external_org_id)
-
-    if (
-        not conn
-        or conn.status != ConnStatusEnum.connected
-        or not conn.access_token
-    ):
+    conn = await get_connection(db=db, org_id=owner_id, provider=ProviderEnum.zoho)
+    
+    if not conn or conn.status != ConnStatusEnum.connected or not conn.access_token:
         return {
-            "range_days": days,
+            "range_days": None if (from_date and to_date) else days,
+            "from_date": from_date,
+            "to_date": to_date,
             "expense_count": 0,
             "total_expenses": 0.0,
             "vendors_count": 0,
@@ -1068,8 +1104,13 @@ async def get_zb_expense_analytics(
             "top_vendor": {"name": None, "amount": 0.0},
         }
 
-    date_end = datetime.utcnow().strftime("%Y-%m-%d")
-    date_start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    # Zoho Specific Date Formatting
+    if from_date and to_date:
+        date_start = from_date.strftime("%Y-%m-%d")
+        date_end = to_date.strftime("%Y-%m-%d")
+    else:
+        date_end = datetime.utcnow().strftime("%Y-%m-%d")
+        date_start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
 
     client = ZohoClient(conn.access_token, conn.external_org_id)
     response = client.get_bills(date_start, date_end)
@@ -1132,6 +1173,7 @@ async def list_unpaid_sales_invoices(db: AsyncSession, owner_id: int):
             Invoice.type == "sales",
             Invoice.is_deleted == False,
             Invoice.is_paid == False,
+            Invoice.is_valid == True
         )
         .order_by(desc(Invoice.created_at))
     )
@@ -1143,37 +1185,65 @@ async def get_internal_sales_analytics(
     db: AsyncSession,
     owner_id: int,
     days: int = 30,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
 ):
     stmt = select(Invoice).where(
         Invoice.owner_id == owner_id,
         Invoice.type == "sales",
         Invoice.is_deleted == False,
         Invoice.source_sales_invoice_id.is_(None),
+        Invoice.is_valid == True
+
     )
 
     result = await db.execute(stmt)
     invoices = result.scalars().all()
 
-    stats = compute_sales_analytics(invoices, days)
+    filtered = []
+    for inv in invoices:
+        if not inv.invoice_date:
+            continue
+        try:
+            inv_date = datetime.strptime(inv.invoice_date, "%d-%m-%Y")
+        except ValueError:
+            continue
+
+        if from_date and to_date:
+            if inv_date.date() < from_date or inv_date.date() > to_date:
+                continue
+        else:
+            if inv_date < datetime.utcnow() - timedelta(days=days):
+                continue
+
+        filtered.append(inv)
+
+    stats = compute_sales_analytics(filtered)
 
     return {
-        "range_days": days,
+        "range_days": None if (from_date and to_date) else days,
+        "from_date": from_date,
+        "to_date": to_date,
         **stats,
+        
     }
 
 async def get_qb_sales_analytics(
     db: AsyncSession,
     owner_id: int,
     days: int = 30,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
 ):
     """
-    Sales analytics from QuickBooks Invoices
+    Sales analytics from QuickBooks Invoices with custom date support
     """
-
     access_token, realm_id = await get_valid_access_token(db)
     if not access_token or not realm_id:
         return {
-            "range_days": days,
+            "range_days": None if (from_date and to_date) else days,
+            "from_date": from_date,
+            "to_date": to_date,
             "sales_count": 0,
             "total_sales": 0.0,
             "customers_count": 0,
@@ -1181,12 +1251,18 @@ async def get_qb_sales_analytics(
             "top_customer": {"name": None, "amount": 0.0},
         }
 
-    cutoff_date = (datetime.utcnow() - timedelta(days=days)).date().isoformat()
+    # Fixed Date Logic
+    if from_date and to_date:
+        date_start = from_date.isoformat()
+        date_end = to_date.isoformat()
+    else:
+        date_end = datetime.utcnow().date().isoformat()
+        date_start = (datetime.utcnow() - timedelta(days=days)).date().isoformat()
 
     qb_query = f"""
         SELECT Id, TxnDate, TotalAmt, Balance, CustomerRef
         FROM Invoice
-        WHERE TxnDate >= '{cutoff_date}'
+        WHERE TxnDate >= '{date_start}' AND TxnDate <= '{date_end}'
     """
 
     base_url = qb_base_url()
@@ -1216,33 +1292,34 @@ async def get_qb_sales_analytics(
 
         total_sales += amount
         sales_count += 1
-
         if customer:
             customers.add(customer)
             customer_totals[customer] += amount
-
         if balance > 0:
             amount_receivable += balance
 
     top_customer = customer_totals.most_common(1)
-    top_customer_data = {
-        "name": top_customer[0][0] if top_customer else None,
-        "amount": round(top_customer[0][1], 2) if top_customer else 0.0,
-    }
-
+    
     return {
-        "range_days": days,
+        "range_days": None if (from_date and to_date) else days,
+        "from_date": from_date,
+        "to_date": to_date,
         "sales_count": sales_count,
         "total_sales": round(total_sales, 2),
         "customers_count": len(customers),
         "amount_receivable": round(amount_receivable, 2),
-        "top_customer": top_customer_data,
+        "top_customer": {
+            "name": top_customer[0][0] if top_customer else None,
+            "amount": round(top_customer[0][1], 2) if top_customer else 0.0,
+        },
     }
 
 async def get_zb_sales_analytics(
     db: AsyncSession,
     owner_id: int,
     days: int = 30,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
 ):
     """
     Sales analytics from Zoho Books Invoices
@@ -1268,15 +1345,22 @@ async def get_zb_sales_analytics(
             "top_customer": {"name": None, "amount": 0.0},
         }
 
-    date_end = datetime.utcnow().strftime("%Y-%m-%d")
-    date_start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    if from_date and to_date:
+        date_start = from_date.strftime("%Y-%m-%d")
+        date_end = to_date.strftime("%Y-%m-%d")
+    else:
+        date_end = datetime.utcnow().strftime("%Y-%m-%d")
+        date_start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+
 
     client = ZohoClient(conn.access_token, conn.external_org_id)
     response = client.get_invoices(date_start, date_end)
 
     if not isinstance(response, dict) or "invoices" not in response:
         return {
-            "range_days": days,
+            "range_days": None if (from_date and to_date) else days,
+            "from_date": from_date,
+            "to_date": to_date,
             "sales_count": 0,
             "total_sales": 0.0,
             "customers_count": 0,
@@ -1314,10 +1398,56 @@ async def get_zb_sales_analytics(
     }
 
     return {
-        "range_days": days,
+        "range_days": None if (from_date and to_date) else days,
+        "from_date": from_date,
+        "to_date": to_date,
         "sales_count": sales_count,
         "total_sales": round(total_sales, 2),
         "customers_count": len(customers),
         "amount_receivable": round(amount_receivable, 2),
         "top_customer": top_customer_data,
     }
+
+async def mark_invoice_payment(
+    db: AsyncSession,
+    invoice_id: int,
+    owner_id: int,
+    paid_amount: float,
+    is_fully_paid: bool,
+):
+    invoice = await get_invoice_by_id_and_owner(db, invoice_id, owner_id)
+    if not invoice:
+        return None
+
+    if is_fully_paid:
+        invoice.is_paid = True
+        invoice.payment_status = "paid"
+    else:
+        invoice.is_paid = False
+        invoice.payment_status = "partial"
+        invoice.partial_paid_amount = str(paid_amount)
+
+    await db.commit()
+    await db.refresh(invoice)
+    return invoice
+
+def classify_document(parsed_fields: dict) -> str:
+    """
+    Returns:
+    - invoice
+    - credit_note
+    - debit_note
+    - invalid
+    """
+
+    invoice_number = parsed_fields.get("invoice_number")
+    has_tax_note = parsed_fields.get("has_tax_note")
+    tax_note_type = parsed_fields.get("tax_note_type")  
+
+    if str(has_tax_note).lower() in {"true", "1"} and tax_note_type in {"credit", "debit"}:
+        return tax_note_type
+
+    if invoice_number:
+        return "invoice"
+
+    return "invalid"

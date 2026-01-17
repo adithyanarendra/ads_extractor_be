@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update, or_
 from urllib.parse import urlparse
 from typing import Tuple
+from app.api.invoices.crud import classify_document
 
 from ...core import auth
 from ...core.database import get_db
@@ -125,6 +126,19 @@ async def extract_invoice(
     await db.commit()
     await db.refresh(placeholder_invoice)
 
+    if invoice_type not in {"expense", "sales"}:
+        placeholder_invoice.is_valid = False
+        placeholder_invoice.extraction_status = "invalid"
+        placeholder_invoice.is_processing = False
+        await db.commit()
+
+        return {
+            "ok": True,
+            "message": "Uploaded document is not an invoice",
+            "invoice_id": placeholder_invoice.id,
+            "is_valid": False,
+        }
+
     asyncio.create_task(
         invoices_crud.run_invoice_extraction(
             invoice_id=placeholder_invoice.id,
@@ -158,6 +172,12 @@ async def request_review(
         raise HTTPException(
             status_code=404, detail={"ok": False, "msg": "Invoice not found"}
         )
+    if not invoice.is_valid:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid document cannot be reviewed",
+        )
+
     invoice.reviewed = False
     await db.commit()
     return {"ok": True, "msg": "Invoice sent for review", "invoice_id": invoice.id}
@@ -212,7 +232,6 @@ async def get_archived_invoices(
     )
     return {"ok": True, "invoices": invoices, "total_count": len(invoices)}
 
-
 @router.get(
     "/all/{invoice_type}/{range_str}",
     response_model=invoices_schemas.InvoiceListResponse,
@@ -263,8 +282,10 @@ async def get_all_invoices_paginated(
         Invoice.batch_id.is_(None),
         Invoice.type == invoice_type,
         Invoice.is_deleted == False,
+        Invoice.is_valid == True,
         or_(Invoice.is_published == False, Invoice.is_published.is_(None)),
     )
+
     total_result = await db.execute(total_stmt)
     total_count = total_result.scalar() or 0
 
@@ -299,7 +320,6 @@ async def export_all_invoices(
         "total_count": len(invoices),
     }
 
-
 @router.get("/to_be_reviewed", response_model=invoices_schemas.InvoiceTBRListResponse)
 async def to_be_reviewed(
     current_user: users_models.User = Depends(get_current_user),
@@ -309,7 +329,6 @@ async def to_be_reviewed(
         db, current_user.effective_user_id
     )
     return {"ok": True, "invoices": invoices}
-
 
 @router.post("/edit/{invoice_id}")
 async def edit_invoice(
@@ -451,7 +470,6 @@ async def delete_invoice(
         "invoice_ids": invoice_ids,
     }
 
-
 @router.post("/extract-local/{invoice_type}")
 async def extract_invoice_local(
     invoice_type: str,
@@ -459,21 +477,30 @@ async def extract_invoice_local(
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-
     ext = os.path.splitext(file.filename)[1]
     safe_name = f"{uuid4().hex}_{invoice_type}_local{ext}"
     content = await file.read()
+    
     loop = asyncio.get_event_loop()
-
     parsed_fields = await loop.run_in_executor(
         None, process_with_qwen, content, ext, invoice_type
     )
+
     if USE_CLOUD_STORAGE:
         file_url = await asyncio.to_thread(upload_to_r2_bytes, content, safe_name)
     else:
         file_url = await asyncio.to_thread(
             upload_to_files_service_bytes, content, safe_name
         )
+
+    doc_type = classify_document(parsed_fields)
+    if doc_type == "invalid":
+        return {
+            "ok": False,
+            "msg": "Invalid document type (not an invoice / credit / debit note)",
+            "parsed_fields": parsed_fields,
+            "file_location": file_url,
+        }
 
     field_values = [
         parsed_fields.get("vendor_name"),
@@ -485,9 +512,7 @@ async def extract_invoice_local(
         parsed_fields.get("total"),
     ]
 
-    all_null = all(v in [None, ""] for v in field_values)
-
-    if all_null:
+    if all(v in [None, ""] for v in field_values):
         return {
             "ok": False,
             "msg": f"{invoice_type.capitalize()} parsing failed, upload the document again",
@@ -496,7 +521,6 @@ async def extract_invoice_local(
         }
 
     parsed_fields["type"] = invoice_type
-
     invoice = await invoices_crud.create_invoice(
         db, current_user.effective_user_id, file_url, parsed_fields
     )
@@ -548,6 +572,12 @@ async def push_invoice(
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    if not invoice.is_valid:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid invoice cannot be pushed to accounting",
+        )
 
     if not invoice.verified:
         raise HTTPException(status_code=400, detail="Invoice not verified")
@@ -596,6 +626,12 @@ async def retry_extraction(
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    if not invoice.is_valid:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid document cannot be retried",
+        )
 
     if not invoice.file_path:
         raise HTTPException(status_code=400, detail="Invoice file missing")
@@ -646,3 +682,29 @@ async def retry_extraction(
         "invoice_id": updated.id,
         "parsed_fields": parsed_fields,
     }
+
+@router.post("/pay")
+async def pay_invoice(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    invoice_id = payload.get("invoiceId")
+    amount = payload.get("amount")
+    is_fully_paid = payload.get("is_fully_paid")
+
+    if not invoice_id or amount is None:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    invoice = await invoices_crud.mark_invoice_payment(
+        db=db,
+        invoice_id=invoice_id,
+        owner_id=user.effective_user_id,
+        paid_amount=float(amount),
+        is_fully_paid=is_fully_paid,
+    )
+
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    return {"ok": True}

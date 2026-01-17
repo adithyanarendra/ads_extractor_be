@@ -3,7 +3,6 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from ...core.database import Base
 
-
 class Invoice(Base):
     __tablename__ = "invoices"
 
@@ -20,6 +19,9 @@ class Invoice(Base):
     remarks = Column(String, nullable=True)
     description = Column(String, nullable=True)
     is_paid = Column(Boolean, default=False, nullable=False)
+    # Payment tracking
+    payment_status = Column(String, nullable=True)
+    partial_paid_amount = Column(String, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
     created_at = Column(
@@ -30,6 +32,7 @@ class Invoice(Base):
     batch_id = Column(Integer, ForeignKey("batches.id"), nullable=True)
     file_hash = Column(String(64), nullable=False, index=True)
     is_duplicate = Column(Boolean, default=False, nullable=False)
+    is_valid = Column(Boolean, default=True, nullable=False)
 
     is_processing = Column(Boolean, default=False)
     line_items = Column(JSON, nullable=True)
@@ -56,6 +59,7 @@ class Invoice(Base):
         foreign_keys=[owner_id],
     )
     company = relationship("Company", backref="invoices")
+
     source_sales_invoice_id = Column(
         Integer,
         ForeignKey("sales_invoices.id", ondelete="SET NULL"),

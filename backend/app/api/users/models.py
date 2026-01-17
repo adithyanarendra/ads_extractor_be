@@ -28,6 +28,8 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
+    role = Column(String(20), nullable=False, default="USER")
+    organisation_id = Column(Integer, nullable=True, index=True)
     name = Column(String, nullable=True)
 
     is_admin = Column(Boolean, default=False)
@@ -58,6 +60,7 @@ class User(Base):
         DateTime(timezone=True),
         nullable=True
     )  
+    is_active = Column(Boolean, default=True, nullable=False)
 
     currency = Column(String(3), nullable=True, server_default=CurrencyEnum.AED.value)
 

@@ -1,6 +1,7 @@
 import io
 import zipfile
 import csv
+import asyncio
 from re import findall
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -13,6 +14,86 @@ from . import models
 from ...utils.r2 import get_file_from_r2
 from ..invoices.models import Invoice
 from .models import Batch
+
+
+def _sanitize_field(value):
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    return value.replace(",", " ").replace("\n", " ").replace("\r", " ").strip()
+
+
+async def _prepare_batch_invoice_entries(
+    db: AsyncSession, batch_id: int, owner_id: int
+):
+    batch_result = await list_invoice_file_paths(db, batch_id, owner_id)
+    if not batch_result.get("ok"):
+        raise ValueError(batch_result.get("message", "Failed to fetch batch files"))
+
+    data = batch_result["data"]
+    files = data.get("files", [])
+    if not files:
+        raise ValueError("No files found for this batch")
+
+    batch_name = data.get("batch_name", f"batch_{batch_id}")
+    rows = []
+    file_tasks = []
+
+    from ..invoices.crud import get_invoice_by_id_and_owner
+
+    for file in files:
+        invoice = await get_invoice_by_id_and_owner(db, file["id"], owner_id)
+        if not invoice:
+            continue
+
+        filename = invoice.file_path.split("/")[-1]
+
+        if "." in filename:
+            ext = filename.rsplit(".", 1)[1].lower()
+        else:
+            ext = "bin"
+
+        invoice_number = invoice.invoice_number or f"INV-{invoice.id}"
+        safe_filename = f"{invoice_number}.{ext}"
+
+        file_tasks.append(
+            (
+                safe_filename,
+                asyncio.create_task(_fetch_file_bytes(filename)),
+            )
+        )
+
+        rows.append(
+            [
+                _sanitize_field(invoice.invoice_number),
+                _sanitize_field(invoice.invoice_date),
+                _sanitize_field(invoice.vendor_name),
+                _sanitize_field(invoice.trn_vat_number),
+                _sanitize_field(invoice.before_tax_amount),
+                _sanitize_field(invoice.tax_amount),
+                _sanitize_field(invoice.total),
+                _sanitize_field(invoice.remarks),
+            ]
+        )
+
+    if not rows:
+        raise ValueError("No invoices could be processed for this batch")
+
+    zipped_files = []
+    for (safe_filename, task), content in zip(file_tasks, await asyncio.gather(*[task for _, task in file_tasks])):
+        if not content:
+            continue
+        zipped_files.append({"filename": safe_filename, "content": content})
+
+    return batch_name, rows, zipped_files
+
+
+async def _fetch_file_bytes(filename: str) -> Optional[bytes]:
+    file_obj = await asyncio.to_thread(get_file_from_r2, filename)
+    if not file_obj:
+        return None
+    return file_obj.read()
 
 
 def _ok(message: str, data=None):
@@ -333,14 +414,9 @@ async def generate_batch_zip_with_csv(
     - A CSV summary file (sanitized)
     Also returns the batch name.
     """
-    batch_result = await list_invoice_file_paths(db, batch_id, owner_id)
-    if not batch_result.get("ok"):
-        raise ValueError(batch_result.get("message", "Failed to fetch batch files"))
-
-    data = batch_result["data"]
-    files = data.get("files", [])
-    if not files:
-        raise ValueError("No files found for this batch")
+    batch_name, rows, files = await _prepare_batch_invoice_entries(
+        db, batch_id, owner_id
+    )
 
     zip_buffer = io.BytesIO()
     csv_buffer = io.StringIO()
@@ -358,57 +434,60 @@ async def generate_batch_zip_with_csv(
         ]
     )
 
-    def sanitize_field(value):
-        if value is None:
-            return ""
-        if not isinstance(value, str):
-            value = str(value)
-        return value.replace(",", " ").replace("\n", " ").replace("\r", " ").strip()
+    for row in rows:
+        csv_writer.writerow(row)
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         for file in files:
-            # Fetch full invoice using id + owner
-            invoice = await get_invoice_by_id_and_owner(db, file["id"], owner_id)
-            if not invoice:
-                continue
-
-            # Add PDF to ZIP
-            filename = invoice.file_path.split("/")[-1]
-            invoice_obj = get_file_from_r2(filename)
-
-            if invoice_obj:
-                file_bytes = invoice_obj.read()
-
-                if "." in filename:
-                    ext = filename.rsplit(".", 1)[1].lower()
-                else:
-                    ext = "bin"
-
-                invoice_number = invoice.invoice_number or f"INV-{invoice.id}"
-                safe_filename = f"{invoice_number}.{ext}"
-
-                zip_file.writestr(safe_filename, file_bytes)
-
-            # Add CSV row
-            csv_writer.writerow(
-                [
-                    sanitize_field(invoice.invoice_number),
-                    sanitize_field(invoice.invoice_date),
-                    sanitize_field(invoice.vendor_name),
-                    sanitize_field(invoice.trn_vat_number),
-                    sanitize_field(invoice.before_tax_amount),
-                    sanitize_field(invoice.tax_amount),
-                    sanitize_field(invoice.total),
-                    sanitize_field(invoice.remarks),
-                ]
-            )
-
-        # Write CSV to ZIP
-        csv_filename = f"{data.get('batch_name', f'batch_{batch_id}')}_summary.csv"
+            zip_file.writestr(file["filename"], file["content"])
+        csv_filename = f"{batch_name}_summary.csv"
         zip_file.writestr(csv_filename, csv_buffer.getvalue())
 
     zip_buffer.seek(0)
-    return zip_buffer, data.get("batch_name", f"batch_{batch_id}")
+    return zip_buffer, batch_name
+
+
+async def generate_batch_csv(
+    db: AsyncSession, batch_id: int, owner_id: int
+) -> tuple[io.StringIO, str]:
+    batch_name, rows, _ = await _prepare_batch_invoice_entries(
+        db, batch_id, owner_id
+    )
+    csv_buffer = io.StringIO()
+    csv_writer = csv.writer(csv_buffer, quoting=csv.QUOTE_ALL)
+    csv_writer.writerow(
+        [
+            "Invoice Number",
+            "Invoice Date",
+            "Vendor Name",
+            "TRN/VAT Number",
+            "Before Tax Amount",
+            "Tax Amount",
+            "Total",
+            "Remarks",
+        ]
+    )
+    for row in rows:
+        csv_writer.writerow(row)
+    csv_buffer.seek(0)
+    return csv_buffer, batch_name
+
+
+async def generate_batch_images_zip(
+    db: AsyncSession, batch_id: int, owner_id: int
+) -> tuple[io.BytesIO, str]:
+    batch_name, _, files = await _prepare_batch_invoice_entries(
+        db, batch_id, owner_id
+    )
+    if not files:
+        raise ValueError("No invoice files found for this batch")
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for file in files:
+            zip_file.writestr(file["filename"], file["content"])
+    zip_buffer.seek(0)
+    return zip_buffer, batch_name
 
 
 async def get_invoice_ids_for_batch(

@@ -50,6 +50,20 @@ async def generate_pnl(
     )
     return result
 
+@router.get("/generate/monthwise_pnl")
+async def generate_monthwise_pnl(
+    year: int,
+    month: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    result = await reports_crud.generate_monthwise_pnl_report(
+        db, current_user.effective_user_id, year, month
+    )
+    if not result["ok"]:
+        return {**result, "http_status": status.HTTP_400_BAD_REQUEST}
+    return result
+
 
 @router.get("/generate/vat_by_batch/{batch_id}")
 async def vat_summary_by_batch(

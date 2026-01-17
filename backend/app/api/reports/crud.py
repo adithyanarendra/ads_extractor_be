@@ -11,6 +11,9 @@ from ..user_docs.models import UserDocs
 from ..sales.models import SalesInvoice, SalesTaxCreditNote
 from ..batches import models as batch_models
 
+from calendar import monthrange
+from datetime import date
+
 
 def _to_decimal(value):
     """Safely convert strings or None to Decimal."""
@@ -40,6 +43,72 @@ def _to_date_from_uploaded_format(date_str: str):
         return datetime.strptime(date_str, "%d-%m-%Y")
     except:
         return None
+    
+def get_month_date_range(year: int, month: int):
+    start_date = date(year, month, 1)
+    last_day = monthrange(year, month)[1]
+    end_date = date(year, month, last_day)
+    return start_date, end_date
+
+async def has_data_for_month(db: AsyncSession, user_id: int, year: int, month: int):
+    start_date, end_date = get_month_date_range(year, month)
+
+    uploaded_q = await db.execute(
+        select(func.count())
+        .select_from(Invoice)
+        .where(
+            Invoice.owner_id == user_id,
+            Invoice.reviewed == True,
+        )
+    )
+
+    uploaded = uploaded_q.scalar() or 0
+
+    sales_q = await db.execute(
+        select(func.count())
+        .select_from(SalesInvoice)
+        .where(
+            SalesInvoice.owner_id == user_id,
+            SalesInvoice.is_deleted == False,
+            func.date(SalesInvoice.invoice_date).between(start_date, end_date),
+        )
+    )
+
+    generated = sales_q.scalar() or 0
+
+    credit_q = await db.execute(
+        select(func.count())
+        .select_from(SalesTaxCreditNote)
+        .where(
+            SalesTaxCreditNote.owner_id == user_id,
+            func.date(SalesTaxCreditNote.credit_note_date).between(start_date, end_date),
+        )
+    )
+
+    credit = credit_q.scalar() or 0
+
+    return (uploaded + generated + credit) > 0
+
+async def generate_monthwise_pnl_report(
+    db: AsyncSession, user_id: int, year: int, month: int
+):
+    start_date, end_date = get_month_date_range(year, month)
+
+    has_data = await has_data_for_month(db, user_id, year, month)
+    if not has_data:
+        return {
+            "ok": False,
+            "message": "No data available for selected month",
+            "error": "NO_DATA",
+            "data": None,
+        }
+
+    return await generate_pnl_report(
+        db,
+        user_id,
+        start_date.isoformat(),
+        end_date.isoformat(),
+    )
 
 
 async def get_vat_summary(db, user_id: int):

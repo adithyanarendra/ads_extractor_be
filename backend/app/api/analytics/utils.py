@@ -14,28 +14,30 @@ def sanitize_total(value):
     except ValueError:
         return 0.0
     
-def compute_sales_analytics(invoices, days: int):
-    cutoff_date = datetime.utcnow() - timedelta(days=days)
-
+def compute_sales_analytics(invoices):
     total_sales = 0.0
     sales_count = 0
     customers = set()
     customer_totals = Counter()
     amount_receivable = 0.0
 
+    seen = set()  # to remove duplicates
+
     for inv in invoices:
         if not inv.invoice_date:
             continue
 
-        try:
-            invoice_date = datetime.strptime(inv.invoice_date, "%d-%m-%Y")
-        except ValueError:
+        # Deduplicate
+        key = (inv.invoice_number, inv.invoice_date)
+        if key in seen:
             continue
-
-        if invoice_date < cutoff_date:
-            continue
+        seen.add(key)
 
         amount = sanitize_total(inv.total)
+
+        # Skip zero-value invoices
+        if amount <= 0:
+            continue
 
         total_sales += amount
         sales_count += 1

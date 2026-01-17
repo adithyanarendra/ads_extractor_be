@@ -48,6 +48,11 @@ async def signup(
                 created_by_user_id = creator.id
             except Exception:
                 created_by_user_id = None
+        
+        can_set_roles = bool(creator and (creator.is_admin or creator.is_super_admin))
+        is_admin = user.is_admin if can_set_roles else False
+        is_accountant = user.is_accountant if can_set_roles else False
+        skip_payment_check = user.skip_payment_check if can_set_roles else False
 
         db_user = await crud.create_user(
             db,
@@ -55,6 +60,9 @@ async def signup(
             user.password,
             name=user.name,
             created_by=created_by_user_id,
+            is_admin=is_admin,
+            is_accountant=is_accountant,
+            skip_payment_check=skip_payment_check,
         )
         return {
             "ok": True,
@@ -271,6 +279,7 @@ async def get_all_users(
         {
             "id": u.id,
             "email": u.email,
+            "name": u.name,
             "is_admin": u.is_admin,
             "is_accountant": u.is_accountant,
             "subscription_status": u.subscription_status,
@@ -485,19 +494,33 @@ async def update_user(
     if not target_user:
         return {"ok": False, "error": "Target user not found"}
 
-    updated_fields = payload.dict(exclude_unset=True, exclude={"user_id"})
-    if not updated_fields:
+    password_update = payload.password.strip() if payload.password else None
+    updated_fields = payload.dict(exclude_unset=True, exclude={"user_id", "password"})
+    if not updated_fields and not password_update:
         return {"ok": False, "error": "No fields to update"}
 
-    if "is_accountant" in updated_fields:
+    if any(
+        key in updated_fields
+        for key in ["is_accountant", "is_admin", "skip_payment_check"]
+    ):
         if not (
             current_user.is_admin or getattr(current_user, "jwt_is_super_admin", False)
         ):
-            return {"ok": False, "error": "Not authorized to change accountant flag"}
+            return {"ok": False, "error": "Not authorized to change user flags"}
 
-    updated_user = await crud.update_user_fields(
-        db, target_user.id, updated_fields, updated_by=current_user.id
-    )
+    updated_user = target_user
+    if updated_fields:
+        updated_user = await crud.update_user_fields(
+            db, target_user.id, updated_fields, updated_by=current_user.id
+        )
+
+    if password_update:
+        updated_user = await crud.reset_password(
+            db,
+            email=target_user.email,
+            new_password=password_update,
+            updated_by=current_user.id,
+        )
 
     return {
         "ok": True,
@@ -508,6 +531,7 @@ async def update_user(
             "name": updated_user.name,
             "is_admin": updated_user.is_admin,
             "is_accountant": updated_user.is_accountant,
+            "skip_payment_check": updated_user.skip_payment_check,
         },
     }
 

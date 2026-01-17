@@ -7,8 +7,10 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from .database import get_db
+from app.api.organisations.models import Organisation
 from app.api.users import models as user_models
 from app.api.users import crud as users_crud
+from app.core.roles import UserRole
 
 
 SECRET_KEY = "SUPER_SECRET_KEY_CHANGE_ME"  # change for production
@@ -17,6 +19,20 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/users/login")
+
+def require_roles(*allowed_roles: UserRole):
+    def _role_dependency(user: user_models.User = Depends(get_current_user)):
+        try:
+            role = UserRole(user.role)
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        if role not in allowed_roles:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        return user
+
+    return _role_dependency
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
@@ -53,6 +69,18 @@ async def get_current_user(
     user = await users_crud.get_user_by_email(db, email)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="User account inactive")
+
+    if not user.organisation_id:
+        raise HTTPException(status_code=403, detail="Organisation missing")
+
+    organisation = await db.get(Organisation, user.organisation_id)
+    if not organisation or not organisation.is_active:
+        raise HTTPException(status_code=403, detail="Organisation inactive")
+
+    user.organisation = organisation
 
     user.jwt_is_super_admin = payload.get("is_admin", False)
     user.jwt_is_accountant = payload.get("is_accountant", False)

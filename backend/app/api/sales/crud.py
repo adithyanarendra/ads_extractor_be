@@ -12,6 +12,9 @@ from ..invoices import crud as invoices_crud
 from ..user_docs import crud as user_docs_crud
 from ...utils.r2 import s3, R2_BUCKET
 
+from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime, date, timedelta, time
+from sqlalchemy import select
 
 def infer_vat_registered(trn: str | None) -> bool:
     return bool(trn and trn.strip())
@@ -765,15 +768,29 @@ async def sync_products_to_inventory(db, owner_id):
     await db.commit()
 
 
-async def list_inventory(db, owner_id):
-    await sync_products_to_inventory(db, owner_id)
-    res = await db.execute(
-        select(models.SalesInventoryItem)
-        .where(models.SalesInventoryItem.owner_id == owner_id)
-        .order_by(models.SalesInventoryItem.id.desc())
+async def list_inventory(
+    db: AsyncSession,
+    owner_id: int,
+    days: int | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+):
+    query = select(models.SalesInventoryItem).where(
+        models.SalesInventoryItem.owner_id == owner_id
     )
-    return res.scalars().all()
 
+    if from_date and to_date:
+        query = query.where(
+            models.SalesInventoryItem.created_at.between(from_date, to_date)
+        )
+    elif days:
+        start_date = datetime.utcnow() - timedelta(days=days)
+        query = query.where(
+            models.SalesInventoryItem.created_at >= start_date
+        )
+
+    res = await db.execute(query)
+    return res.scalars().all()
 
 async def get_invoice_with_items(db, owner_id, invoice_id):
     res = await db.execute(

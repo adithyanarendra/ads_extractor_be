@@ -3,6 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.auth import get_current_user
+from datetime import date
+from typing import Optional
 
 from app.api.invoices.crud import (
     get_internal_expense_analytics,
@@ -30,12 +32,11 @@ router = APIRouter(
 # ─────────────────────────────────────────────
 # Internal Expenses Analytics
 # ─────────────────────────────────────────────
-@router.get(
-    "/internal/expenses",
-    response_model=InternalExpenseAnalyticsResponse,
-)
+@router.get("/internal/expenses")
 async def internal_expense_analytics(
     range: int = Query(30, enum=[30, 90, 180]),
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
@@ -43,7 +44,10 @@ async def internal_expense_analytics(
         db=db,
         owner_id=user.id,
         days=range,
+        from_date=from_date,
+        to_date=to_date,
     )
+
 
 
 # ─────────────────────────────────────────────
@@ -52,6 +56,8 @@ async def internal_expense_analytics(
 @router.get("/qb/expenses")
 async def qb_expense_analytics(
     range: int = Query(30, enum=[30, 90, 180]),
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
@@ -59,6 +65,8 @@ async def qb_expense_analytics(
         db=db,
         owner_id=user.id,
         days=range,
+        from_date=from_date,
+        to_date=to_date,
     )
 
 # ─────────────────────────────────────────────
@@ -69,12 +77,16 @@ async def qb_expense_analytics(
 async def zb_expense_analytics(
     range: int = Query(30, enum=[30, 90, 180]),
     db: AsyncSession = Depends(get_db),
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
     user = Depends(get_current_user),
 ):
     return await get_zb_expense_analytics(
         db=db,
         owner_id=user.id,
         days=range,
+        from_date=from_date,
+        to_date=to_date,
     )
 
 
@@ -103,6 +115,8 @@ async def get_unpaid_sales_invoices(
 )
 async def internal_sales_analytics(
     range: int = Query(30, enum=[30, 90, 180]),
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
@@ -110,11 +124,16 @@ async def internal_sales_analytics(
         db=db,
         owner_id=user.id,
         days=range,
+        from_date=from_date,
+        to_date=to_date,
     )
+
 
 @router.get("/zb/sales")
 async def zb_sales_analytics(
     range: int = Query(30, enum=[30, 90, 180]),
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
@@ -122,12 +141,16 @@ async def zb_sales_analytics(
         db=db,
         owner_id=user.id,
         days=range,
+        from_date=from_date,
+        to_date=to_date,
     )
 
 
 @router.get("/qb/sales")
 async def qb_sales_analytics(
     range: int = Query(30, enum=[30, 90, 180]),
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
@@ -135,4 +158,6 @@ async def qb_sales_analytics(
         db=db,
         owner_id=user.id,
         days=range,
+        from_date=from_date,
+        to_date=to_date,
     )

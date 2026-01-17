@@ -1,14 +1,15 @@
+import io
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..users import models as users_models
-from ..invoices.routes import get_current_user
+from app.core.auth import get_current_user, require_roles, UserRole
 from app.core.database import get_db
 from .schemas import BatchCreate, AddInvoicesPayload
 from . import crud
 from ..invoices import crud as invoices_crud
 from app.api.accounting import crud as accounting_crud
-from app.api.accounting.routes import ensure_valid_token
+from app.api.accounting.routes import get_connected_zoho_connection
 from app.api.accounting.zoho_client import ZohoClient
 
 router = APIRouter(prefix="/batches", tags=["Batches"])
@@ -145,6 +146,52 @@ async def download_batch_zip(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.get("/download-excel/{batch_id}")
+async def download_batch_excel(
+    batch_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(get_current_user),
+):
+    try:
+        csv_buffer, batch_name = await crud.generate_batch_csv(
+            db, batch_id, current_user.effective_user_id
+        )
+        csv_bytes = csv_buffer.getvalue().encode("utf-8")
+        return StreamingResponse(
+            io.BytesIO(csv_bytes),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="{batch_name}_summary.csv"',
+                "Content-Length": str(len(csv_bytes)),
+            },
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/download-images/{batch_id}")
+async def download_batch_images(
+    batch_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: users_models.User = Depends(get_current_user),
+):
+    try:
+        zip_buffer, batch_name = await crud.generate_batch_images_zip(
+            db, batch_id, current_user.effective_user_id
+        )
+        zip_size = zip_buffer.getbuffer().nbytes
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{batch_name}_images.zip"',
+                "Content-Length": str(zip_size),
+            },
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.delete("/{batch_id}/invoice/{invoice_id}")
 async def delete_invoice_from_batch(
     batch_id: int,
@@ -180,6 +227,12 @@ async def push_batch_to_zoho(
     db: AsyncSession = Depends(get_db),
     current_user: users_models.User = Depends(get_current_user),
 ):
+    if not (
+        current_user.is_admin
+        or getattr(current_user, "jwt_is_super_admin", False)
+        or getattr(current_user, "jwt_is_accountant", False)
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
     batch = await crud.get_batch_with_invoices(
         db, batch_id, owner_id=current_user.effective_user_id
     )
@@ -200,20 +253,23 @@ async def push_batch_to_zoho(
             "error": f"{len(missing_coa)} invoices missing Chart of Account selection",
         }
 
-    org_id = 1
-    conn = await accounting_crud.get_connection(db, org_id)
-    if not conn:
-        raise HTTPException(status_code=401, detail="Not connected to Zoho Books")
-
-    conn = await ensure_valid_token(db, conn)
-    if not conn:
-        raise HTTPException(status_code=401, detail="Zoho token refresh failed")
+    conn = await get_connected_zoho_connection(db, current_user)
 
     client = ZohoClient(conn.access_token, conn.external_org_id)
     summary = {"success": 0, "failed": 0, "errors": []}
 
     for inv in invoices:
         invoice_type = "sales" if inv.get("type") == "sales" else "expense"
+        inv_id = inv.get("id")
+        if inv_id:
+            db_inv = await invoices_crud.get_invoice_by_id_and_owner(
+                db, inv_id, current_user.effective_user_id
+            )
+            if db_inv:
+                inv["trn_vat_number"] = db_inv.trn_vat_number
+                inv["tax_amount"] = db_inv.tax_amount
+                inv["before_tax_amount"] = db_inv.before_tax_amount
+                inv["line_items"] = db_inv.line_items
         payload = {
             "invoices": [inv],
             "account_id": inv["chart_of_account_id"],

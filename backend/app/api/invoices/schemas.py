@@ -47,6 +47,7 @@ class InvoiceBase(BaseModel):
     chart_of_account_id: Optional[str] = None
     chart_of_account_name: Optional[str] = None
     is_paid: Optional[bool] = False
+    is_valid: Optional[bool] = True
 
     
     @validator("invoice_date", pre=True)

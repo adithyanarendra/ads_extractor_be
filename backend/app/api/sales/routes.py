@@ -235,14 +235,26 @@ async def record_sales_payment(
     return {"ok": True, "message": message, "data": data}
 
 
+from datetime import datetime, timedelta, date
+from sqlalchemy import select
+
 @router.get("/inventory")
 async def get_inventory(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
+    days: int | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
 ):
-    items = await crud.list_inventory(db, current_user.effective_user_id)
-    return {"ok": True, "message": "Fetched", "data": items}
+    items = await crud.list_inventory(
+        db,
+        current_user.effective_user_id,
+        days=days,
+        from_date=from_date,
+        to_date=to_date,
+    )
 
+    return {"ok": True, "message": "Fetched", "data": items}
 
 @router.post("/inventory")
 async def add_inventory_items(

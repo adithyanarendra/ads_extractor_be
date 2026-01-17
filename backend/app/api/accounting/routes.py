@@ -1,3 +1,4 @@
+import requests
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -78,6 +79,48 @@ async def ensure_valid_token(db: AsyncSession, conn: AccountingConnection):
     return conn
 
 
+def _fetch_organization_id(access_token: str, dc_domain: str) -> str | None:
+    books_domain = dc_domain.replace("accounts.", "books.")
+    url = f"{books_domain}/api/v3/organizations"
+    headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
+
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        organizations = data.get("organizations") or data.get("data") or []
+        if not organizations:
+            return None
+        return organizations[0].get("organization_id")
+    except Exception as err:
+        print("Unable to fetch Zoho organization_id:", err)
+        return None
+
+
+def _get_org_id_from_user(user: User):
+    return getattr(user, "effective_user_id", user.id)
+
+
+async def _fetch_zoho_connection(
+    db: AsyncSession, current_user: User
+) -> AccountingConnection | None:
+    org_id = _get_org_id_from_user(current_user)
+    conn = await crud.get_connection(db, org_id)
+    return conn
+
+
+async def get_connected_zoho_connection(
+    db: AsyncSession, current_user: User
+) -> AccountingConnection:
+    conn = await _fetch_zoho_connection(db, current_user)
+    if not conn:
+        raise HTTPException(401, "Not connected to Zoho Books")
+    conn = await ensure_valid_token(db, conn)
+    if not conn:
+        raise HTTPException(401, "Token refresh failed")
+    return conn
+
+
 # ------------------------------------------------------------
 # 1. CONNECT URL
 # ------------------------------------------------------------
@@ -150,7 +193,12 @@ async def zoho_callback(
                 status_code=302
             )
 
-        org_id = 1
+        fetched_org_id = _fetch_organization_id(access_token, dc_domain)
+        if fetched_org_id:
+            external_org_id = fetched_org_id
+
+        acting_id = decoded["payload"].get("acting_user_id")
+        org_id = acting_id or user_id
         existing = await crud.get_connection(db, org_id)
 
         if existing:
@@ -191,15 +239,7 @@ async def get_chart_of_accounts(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
-    org_id = 1
-    conn = await crud.get_connection(db, org_id)
-    if not conn:
-        raise HTTPException(401, "Not connected to Zoho")
-
-    conn = await ensure_valid_token(db, conn)
-    if not conn:
-        raise HTTPException(401, "Token refresh failed")
-
+    conn = await get_connected_zoho_connection(db, current_user)
     client = ZohoClient(conn.access_token, conn.external_org_id)
     data = client.get_chart_of_accounts()
 
@@ -213,21 +253,6 @@ async def get_chart_of_accounts(
 # ------------------------------------------------------------
 # 4. PUSH SINGLE INVOICE
 # ------------------------------------------------------------
-@router.post("/zoho/push-invoice")
-async def push_invoice(
-    invoice_data: dict,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_active_subscription),
-):
-    org_id = 1
-    conn = await crud.get_connection(db, org_id)
-
-    if not conn:
-        raise HTTPException(401, "Not connected to Zoho")
-
-    conn = await ensure_valid_token(db, conn)
-
-    client = ZohoClient(conn.access_token, conn.external_org_id)
     return client.push_invoice(invoice_data)
 
 
@@ -275,14 +300,7 @@ async def push_invoices(
     current_user: User = Depends(require_active_subscription),
 ):
     """Push multiple invoices to Zoho Books"""
-    org_id = 1
-    conn = await crud.get_connection(db, org_id)
-
-    if not conn:
-        raise HTTPException(401, "Not connected to Zoho")
-
-    conn = await ensure_valid_token(db, conn)
-
+    conn = await get_connected_zoho_connection(db, current_user)
     client = ZohoClient(conn.access_token, conn.external_org_id)
 
     account_id = payload.get("account_id")
@@ -355,6 +373,19 @@ async def push_invoices(
             )
         payload["invoices"] = enriched_invoices
 
+    payload_invoices = payload.get("invoices", [])
+    for invoice in payload_invoices:
+        inv_id = invoice.get("id")
+        if not inv_id:
+            continue
+        db_inv = invoice_map.get(inv_id)
+        if not db_inv:
+            continue
+        invoice["trn_vat_number"] = db_inv.trn_vat_number
+        invoice["tax_amount"] = db_inv.tax_amount
+        invoice["before_tax_amount"] = db_inv.before_tax_amount
+        invoice["line_items"] = db_inv.line_items
+
     result = await client.push_multiple_invoices(payload, db)
 
     await mark_invoices_verified(
@@ -371,27 +402,36 @@ async def push_invoices(
 # 6. STATUS
 # ------------------------------------------------------------
 @router.get("/zoho/status")
-async def zoho_status(
+async def get_zoho_status(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
-    org_id = 1
-    conn = await crud.get_connection(db, org_id)
+    """Get Zoho Books connection status"""
+    conn = await _fetch_zoho_connection(db, current_user)
 
     if not conn:
-        return {"connected": False, "org_id": org_id}
+        return {
+            "connected": False,
+            "status": "disconnected",
+            "org_id": None,
+            "connection_id": None,
+            "expires_at": None,
+            "token_valid": False,
+        }
 
-    expires_at = conn.expires_at
     now = datetime.now(timezone.utc)
-    token_valid = bool(expires_at and expires_at > now)
+    token_valid = conn.expires_at and conn.expires_at > now
+    expires_at = conn.expires_at.isoformat() if conn.expires_at else None
     is_connected = conn.status == ConnStatusEnum.connected
 
     return {
         "connected": is_connected,
+        "status": conn.status.value if hasattr(conn.status, "value") else str(conn.status),
         "org_id": conn.org_id,
         "connection_id": conn.id,
         "expires_at": expires_at,
         "token_valid": token_valid,
+        "organization_id": conn.external_org_id,
     }
 
 
@@ -399,23 +439,22 @@ async def zoho_status(
 # 7. DISCONNECT
 # ------------------------------------------------------------
 @router.post("/zoho/disconnect")
-async def zoho_disconnect(
+async def disconnect_zoho(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
-    org_id = 1
-    conn = await crud.get_connection(db, org_id)
+    """Disconnect from Zoho Books"""
+    conn = await _fetch_zoho_connection(db, current_user)
 
     if not conn:
-        raise HTTPException(status_code=400, detail="Not connected")
+        raise HTTPException(status_code=404, detail="No Zoho connection found")
 
     await crud.delete_connection(db, conn.id)
-
     await mark_zb_disconnected(db, current_user.id)
 
     return {
         "success": True,
-        "message": "Disconnected from Zoho Books"
+        "message": "Disconnected from Zoho Books",
     }
 
 @router.get("/zoho/simple-status")
