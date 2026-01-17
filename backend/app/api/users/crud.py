@@ -39,6 +39,7 @@ async def create_user(
     is_admin: bool = False,
     is_accountant: bool = False,
     skip_payment_check: bool = False,
+    organisation_id: Optional[int] = None,
 ) -> users_models.User:
     hashed = get_password_hash(password)
     first_user = await db.execute(select(users_models.User))
@@ -51,6 +52,7 @@ async def create_user(
         is_admin=effective_is_admin,
         is_accountant=is_accountant,
         skip_payment_check=skip_payment_check,
+        organisation_id=organisation_id or 2,
         created_by=created_by,
         updated_by=created_by,
         last_updated_by=created_by,
