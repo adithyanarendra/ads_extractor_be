@@ -1,4 +1,4 @@
-from sqlalchemy import select, func, cast, Numeric
+from sqlalchemy import select, func, cast, Numeric, text
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -110,6 +110,23 @@ async def generate_monthwise_pnl_report(
         end_date.isoformat(),
     )
 
+async def get_available_pnl_months(db, user_id: int, year: int):
+    rows = await db.execute(
+        text("""
+            SELECT DISTINCT
+                EXTRACT(
+                    MONTH FROM TO_DATE(invoice_date, 'DD-MM-YYYY')
+                )::int AS month
+            FROM invoices
+            WHERE owner_id = :user_id
+              AND EXTRACT(
+                    YEAR FROM TO_DATE(invoice_date, 'DD-MM-YYYY')
+                  ) = :year
+        """),
+        {"user_id": user_id, "year": year}
+    )
+
+    return sorted([r.month for r in rows])
 
 async def get_vat_summary(db, user_id: int):
     try:

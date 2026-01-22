@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from sqlalchemy.ext.asyncio import AsyncSession
-
+import io
 from ...core.database import get_db
 from ..invoices.routes import get_current_user
 from . import crud as reports_crud
@@ -174,7 +174,46 @@ async def store_generated_pdf(
             "data": None,
         }
 
+@router.get("/pnl/available-months")
+async def pnl_available_months(
+    year: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    months = await reports_crud.get_available_pnl_months(
+        db=db,
+        user_id=current_user.effective_user_id,
+        year=year
+    )
 
+    return {
+        "ok": True,
+        "data": months
+    }
+@router.post("/export/pdf")
+async def export_pdf_stream(
+    payload: ReportPDFStoreRequest,
+    current_user=Depends(get_current_user),
+):
+    try:
+        report_data = dict(payload.report_data or {})
+        report_data.setdefault("generated_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M"))
+        
+        pdf_bytes = _render_report_pdf("pnl_pdf", report_data)
+        
+        filename = payload.report_name or "report.pdf"
+        
+        stream = io.BytesIO(pdf_bytes)
+        
+        return StreamingResponse(
+            stream,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @router.get("/view/{report_id}")
 async def view_report(
     report_id: int,

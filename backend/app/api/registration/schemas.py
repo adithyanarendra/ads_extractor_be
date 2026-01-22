@@ -13,6 +13,7 @@ class RegistrationCreate(BaseModel):
 class RegistrationOut(BaseModel):
     id: int
     status: RegistrationStatus
+    exists: bool = False
 
     class Config:
         from_attributes = True

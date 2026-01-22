@@ -139,6 +139,7 @@ async def list_batches(db: AsyncSession, owner_id: int) -> Dict[str, Any]:
                 {
                     "id": b.id,
                     "name": b.name,
+                    "locked": b.locked,
                     "invoice_count": len(uploaded_invoices),
                     "sales_generated_count": len(sales_generated_invoices),
                     "invoice_count_unpublished": len(unpublished_invoices),
@@ -150,7 +151,6 @@ async def list_batches(db: AsyncSession, owner_id: int) -> Dict[str, Any]:
         return _ok("Fetched batches.", data)
     except Exception as e:
         return _err("Failed to fetch batches.", str(e))
-
 
 async def create_batch(
     db: AsyncSession,
@@ -647,6 +647,9 @@ async def find_matching_batch_for_invoice(
         batches = result.scalars().all()
 
         for b in batches:
+            if b.locked:
+                continue
+
             single = parse_single_month_batch(b.name)
             if single:
                 m, y = single

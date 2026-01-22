@@ -775,8 +775,13 @@ async def list_inventory(
     from_date: date | None = None,
     to_date: date | None = None,
 ):
-    query = select(models.SalesInventoryItem).where(
-        models.SalesInventoryItem.owner_id == owner_id
+    query = (
+        select(models.SalesInventoryItem, models.SalesProduct.vat_percentage)
+        .outerjoin(
+            models.SalesProduct,
+            models.SalesInventoryItem.product_id == models.SalesProduct.id,
+        )
+        .where(models.SalesInventoryItem.owner_id == owner_id)
     )
 
     if from_date and to_date:
@@ -790,7 +795,25 @@ async def list_inventory(
         )
 
     res = await db.execute(query)
-    return res.scalars().all()
+    rows = res.all()
+    items = []
+    for inv, vat_pct in rows:
+        items.append(
+            {
+                "id": inv.id,
+                "owner_id": inv.owner_id,
+                "product_id": inv.product_id,
+                "product_name": inv.product_name,
+                "unique_code": inv.unique_code,
+                "cost_price": inv.cost_price,
+                "selling_price": inv.selling_price,
+                "quantity": inv.quantity,
+                "created_at": inv.created_at,
+                "updated_at": inv.updated_at,
+                "vat_percentage": vat_pct if vat_pct is not None else 0,
+            }
+        )
+    return items
 
 async def get_invoice_with_items(db, owner_id, invoice_id):
     res = await db.execute(

@@ -1,8 +1,11 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Dict
+from sqlalchemy.sql import func
+from sqlalchemy import select
+from typing import Dict, Tuple, List
 from app.api.registration import models
-from app.utils.r2 import upload_to_r2_bytes
+from app.utils.r2 import upload_to_r2_bytes, delete_from_r2
 import uuid
+import os
 
 
 async def create_registration(
@@ -27,25 +30,60 @@ async def create_registration(
 async def upload_documents(
     db: AsyncSession,
     registration_id: int,
-    files: Dict[str, bytes],
-):
+    files: Dict[str, Tuple[bytes, str]],
+) -> List[Dict[str, str]]:
     reg = await db.get(models.RegistrationUser, registration_id)
     if not reg:
         raise ValueError("Invalid registration id")
 
-    if reg.status != models.RegistrationStatus.PENDING:
-        raise ValueError("Documents already uploaded")
+    if reg.status in (
+        models.RegistrationStatus.APPROVED,
+        models.RegistrationStatus.REJECTED,
+    ):
+        raise ValueError("Registration is not editable")
 
-    for doc_key, file in files.items():
-        filename = f"registration/{registration_id}/{doc_key}/{uuid.uuid4()}"
-        url = upload_to_r2_bytes(file, filename)
-
-        doc = models.RegistrationUserDoc(
-            registration_user_id=registration_id,
-            doc_key=doc_key,
-            file_url=url,
+    created_docs = []
+    for doc_key, (file_bytes, original_name) in files.items():
+        existing_doc = await db.scalar(
+            select(models.RegistrationUserDoc).where(
+                models.RegistrationUserDoc.registration_user_id == registration_id,
+                models.RegistrationUserDoc.doc_key == doc_key,
+            )
         )
-        db.add(doc)
+        _, ext = os.path.splitext(original_name or "")
+        safe_ext = ext.lower() if ext else ""
+        filename = (
+            f"registration/{registration_id}/{doc_key}/{uuid.uuid4()}{safe_ext}"
+        )
+        url = upload_to_r2_bytes(file_bytes, filename)
 
-    reg.status = models.RegistrationStatus.DOC_UPLOADED
+        if existing_doc:
+            if "r2.dev/" in existing_doc.file_url:
+                old_key = existing_doc.file_url.split("r2.dev/")[-1]
+                delete_from_r2(old_key)
+            existing_doc.file_url = url
+            existing_doc.uploaded_at = func.now()
+            await db.flush()
+            created_docs.append(
+                {
+                    "id": existing_doc.id,
+                    "doc_key": existing_doc.doc_key,
+                    "file_url": existing_doc.file_url,
+                }
+            )
+        else:
+            doc = models.RegistrationUserDoc(
+                registration_user_id=registration_id,
+                doc_key=doc_key,
+                file_url=url,
+            )
+            db.add(doc)
+            await db.flush()
+            created_docs.append(
+                {"id": doc.id, "doc_key": doc.doc_key, "file_url": doc.file_url}
+            )
+
+    if reg.status == models.RegistrationStatus.PENDING:
+        reg.status = models.RegistrationStatus.DOC_UPLOADED
     await db.commit()
+    return created_docs
