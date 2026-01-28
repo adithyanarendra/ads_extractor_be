@@ -3,6 +3,7 @@ from re import findall
 import asyncio
 from calendar import month_abbr
 from datetime import datetime, timezone
+from dateutil import parser as date_parser
 from fastapi import UploadFile, HTTPException, status
 from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
@@ -508,24 +509,72 @@ async def get_user_docs_for_timeline(db: AsyncSession, user_id: int):
     timeline = []
     now = datetime.now(timezone.utc)
 
-    for d in docs:
-        expiry = (
-            d.expiry_date
-            or d.tl_expiry_date
-            or d.passport_expiry_date
-            or d.emirates_id_expiry_date
-        )
-
-        if expiry:
-            days_left = (expiry - now).days
+    def _parse_action_date(value):
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            parsed = value
         else:
-            days_left = None
+            try:
+                parsed = date_parser.parse(str(value), dayfirst=True)
+            except Exception:
+                return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    def _roll_forward_yearly(dt, now_dt):
+        if not dt:
+            return None
+        rolled = dt
+        while rolled < now_dt:
+            try:
+                rolled = rolled.replace(year=rolled.year + 1)
+            except ValueError:
+                rolled = rolled.replace(month=2, day=28, year=rolled.year + 1)
+        return rolled
+
+    for d in docs:
+        action_candidates = [
+            d.filing_date,
+            d.vat_vat_return_due_date,
+            d.ct_first_return_due_date,
+        ]
+
+        if isinstance(d.generic_action_dates, list):
+            action_candidates.extend(d.generic_action_dates)
+
+        action_dates = [
+            dt for dt in (_parse_action_date(v) for v in action_candidates) if dt
+        ]
+        future_actions = [dt for dt in action_dates if dt >= now]
+        action_date = min(future_actions) if future_actions else None
+        if not action_date and action_dates and d.doc_type in {
+            "vat_certificate",
+            "ct_certificate",
+        }:
+            latest_past = max(action_dates)
+            action_date = _roll_forward_yearly(latest_past, now)
+
+        expiry = None
+        if d.doc_type not in {"vat_certificate", "ct_certificate"}:
+            expiry = _parse_action_date(
+                d.expiry_date
+                or d.tl_expiry_date
+                or d.passport_expiry_date
+                or d.emirates_id_expiry_date
+            )
+
+        effective_date = action_date or expiry
+        days_left = (effective_date - now).days if effective_date else None
 
         timeline.append(
             {
                 "id": d.id,
                 "file_name": d.file_name,
                 "doc_type": d.doc_type,
+                "action_date": action_date,
+                "action_type": "action" if action_date else ("expiry" if expiry else None),
                 "expiry_date": expiry,
                 "days_left": days_left,
             }
