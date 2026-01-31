@@ -270,6 +270,7 @@ async def push_batch_to_zoho(
                 inv["tax_amount"] = db_inv.tax_amount
                 inv["before_tax_amount"] = db_inv.before_tax_amount
                 inv["line_items"] = db_inv.line_items
+                inv["file_path"] = db_inv.file_path
         payload = {
             "invoices": [inv],
             "account_id": inv["chart_of_account_id"],

@@ -20,6 +20,7 @@ from typing import Tuple
 from app.api.invoices.crud import classify_document
 
 from ...core import auth
+from ...core.roles import UserRole
 from ...core.database import get_db
 from .models import Invoice
 from . import schemas as invoices_schemas
@@ -189,6 +190,13 @@ async def review_invoice(
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if not (
+        getattr(current_user, "jwt_company_role", None) == "admin"
+        or getattr(current_user, "jwt_is_accountant", False)
+        or getattr(current_user, "is_admin", False)
+        or getattr(current_user, "is_super_admin", False)
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
     invoice = await invoices_crud.update_invoice_review(
         db,
         payload.invoice_id,
@@ -337,6 +345,13 @@ async def edit_invoice(
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if not (
+        getattr(current_user, "jwt_company_role", None) == "admin"
+        or getattr(current_user, "jwt_is_accountant", False)
+        or getattr(current_user, "is_admin", False)
+        or getattr(current_user, "is_super_admin", False)
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
     invoice = await invoices_crud.edit_invoice(
         db, invoice_id, current_user.effective_user_id, payload.corrected_fields
     )

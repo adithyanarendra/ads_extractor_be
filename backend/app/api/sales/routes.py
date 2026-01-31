@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from io import BytesIO
@@ -214,6 +214,25 @@ async def create_tax_credit_note(
 async def delete_sales_invoice(
     invoice_id: int, db=Depends(get_db), current_user=Depends(get_current_user)
 ):
+    inv = await crud.get_invoice_with_items(
+        db, current_user.effective_user_id, invoice_id
+    )
+    if not inv:
+        return {"ok": False, "message": "Not found"}
+
+    total = float(inv.total or 0)
+    amount_paid = float(inv.amount_paid or 0)
+    is_paid = total > 0 and amount_paid >= total
+    has_credit_note = await crud.has_credit_note(
+        db, current_user.effective_user_id, invoice_id
+    )
+
+    if is_paid and not has_credit_note:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete a paid invoice without a credit note",
+        )
+
     ok = await crud.delete_invoice(db, current_user.effective_user_id, invoice_id)
     return {"ok": ok, "message": "Deleted" if ok else "Not found"}
 

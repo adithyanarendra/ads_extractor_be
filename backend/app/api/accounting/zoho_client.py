@@ -1,9 +1,14 @@
 import requests
 import os
-from typing import Dict, List, Optional
+import mimetypes
+from urllib.parse import urlparse
+from typing import Dict, List, Optional, Tuple
 from sqlalchemy import update
 from app.api.invoices.models import Invoice
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.utils.r2 import get_file_from_r2
+from app.utils.files_service import get_file_from_files_service
+from app.core.config import FILES_SERVICE_BASE_URL
 
 class ZohoClient:
     """Handle all Zoho Books API calls"""
@@ -17,6 +22,8 @@ class ZohoClient:
             "Content-Type": "application/json"
         }
         self._standard_tax_id = None
+        self._last_customer_error = None
+        self._last_vendor_error = None
     
     def get_chart_of_accounts(self) -> Dict:
         """Fetch all accounts from Zoho"""
@@ -89,15 +96,14 @@ class ZohoClient:
                 return
             msg = str(result.get("message", "")).lower()
             if "tax_treatment" in msg or "tax_reg_no" in msg:
-                fallback = {"gst_treatment": "business_gst", "gst_no": trn_clean}
-                requests.put(
-                    url, headers=self.headers, params=params, json=fallback
-                )
+                # Some regions do not accept GST fields; skip tax update if rejected.
+                return
         except Exception as e:
             print(f"Error updating contact tax: {str(e)}")
 
     def get_or_create_customer(self, customer_name: str, trn: str | None = None) -> Optional[str]:
         """Get customer or create if doesn't exist (for Sales invoices)"""
+        self._last_customer_error = None
         try:
             url = f"{self.base_url}/contacts"
             params = {
@@ -108,7 +114,8 @@ class ZohoClient:
             response = requests.get(url, headers=self.headers, params=params)
             data = response.json()
             if data.get("code") not in (0, None):
-                print(f"Zoho vendor lookup error: {data}")
+                self._last_customer_error = data
+                print(f"Zoho customer lookup error: {data}")
             
             if "contacts" in data and len(data["contacts"]) > 0:
                 contact_id = data["contacts"][0]["contact_id"]
@@ -125,34 +132,45 @@ class ZohoClient:
             if trn_clean:
                 create_data["tax_treatment"] = "vat_registered"
                 create_data["tax_reg_no"] = trn_clean
-            response = requests.post(url, headers=self.headers, json=create_data)
+            response = requests.post(
+                url,
+                headers=self.headers,
+                params={"organization_id": self.org_id},
+                json=create_data,
+            )
             result = response.json()
             if result.get("code") not in (0, None):
-                print(f"Zoho vendor create error: {result}")
+                self._last_customer_error = result
+                print(f"Zoho customer create error: {result}")
 
             if result.get("code") != 0:
                 msg = str(result.get("message", "")).lower()
                 if "tax_treatment" in msg or "tax_reg_no" in msg:
                     create_data.pop("tax_treatment", None)
                     create_data.pop("tax_reg_no", None)
-                    if trn_clean:
-                        create_data["gst_treatment"] = "business_gst"
-                        create_data["gst_no"] = trn_clean
-                    response = requests.post(url, headers=self.headers, json=create_data)
+                    response = requests.post(
+                        url,
+                        headers=self.headers,
+                        params={"organization_id": self.org_id},
+                        json=create_data,
+                    )
                     result = response.json()
                     if result.get("code") not in (0, None):
-                        print(f"Zoho vendor create retry error: {result}")
+                        self._last_customer_error = result
+                        print(f"Zoho customer create retry error: {result}")
             
             if "contact" in result:
                 return result["contact"]["contact_id"]
             
             return None
         except Exception as e:
+            self._last_customer_error = {"error": str(e)}
             print(f"Error with customer: {str(e)}")
             return None
     
     def get_or_create_vendor(self, vendor_name: str, trn: str | None = None) -> Optional[str]:
         """Get vendor or create if doesn't exist (for Purchase bills)"""
+        self._last_vendor_error = None
         try:
             url = f"{self.base_url}/contacts"
             params = {
@@ -162,6 +180,9 @@ class ZohoClient:
             }
             response = requests.get(url, headers=self.headers, params=params)
             data = response.json()
+            if data.get("code") not in (0, None):
+                self._last_vendor_error = data
+                print(f"Zoho vendor lookup error: {data}")
             
             if "contacts" in data and len(data["contacts"]) > 0:
                 contact_id = data["contacts"][0]["contact_id"]
@@ -178,25 +199,39 @@ class ZohoClient:
             if trn_clean:
                 create_data["tax_treatment"] = "vat_registered"
                 create_data["tax_reg_no"] = trn_clean
-            response = requests.post(url, headers=self.headers, json=create_data)
+            response = requests.post(
+                url,
+                headers=self.headers,
+                params={"organization_id": self.org_id},
+                json=create_data,
+            )
             result = response.json()
+            if result.get("code") not in (0, None):
+                self._last_vendor_error = result
+                print(f"Zoho vendor create error: {result}")
 
             if result.get("code") != 0:
                 msg = str(result.get("message", "")).lower()
                 if "tax_treatment" in msg or "tax_reg_no" in msg:
                     create_data.pop("tax_treatment", None)
                     create_data.pop("tax_reg_no", None)
-                    if trn_clean:
-                        create_data["gst_treatment"] = "business_gst"
-                        create_data["gst_no"] = trn_clean
-                    response = requests.post(url, headers=self.headers, json=create_data)
+                    response = requests.post(
+                        url,
+                        headers=self.headers,
+                        params={"organization_id": self.org_id},
+                        json=create_data,
+                    )
                     result = response.json()
+                    if result.get("code") not in (0, None):
+                        self._last_vendor_error = result
+                        print(f"Zoho vendor create retry error: {result}")
             
             if "contact" in result:
                 return result["contact"]["contact_id"]
             
             return None
         except Exception as e:
+            self._last_vendor_error = {"error": str(e)}
             print(f"Error with vendor: {str(e)}")
             return None
 
@@ -355,6 +390,72 @@ class ZohoClient:
             print(f"Error creating sales invoice: {str(e)}")
             return {"error": str(e)}
 
+    def _download_file_bytes(self, file_path: str) -> Tuple[Optional[bytes], Optional[str]]:
+        if not file_path:
+            return None, None
+
+        parsed = urlparse(file_path)
+        path = parsed.path or file_path
+        filename = path.split("/")[-1]
+        try:
+            if "r2.dev/" in file_path:
+                key = path.lstrip("/")
+                file_obj = get_file_from_r2(key)
+                if file_obj:
+                    return file_obj.read(), filename
+            elif FILES_SERVICE_BASE_URL and file_path.startswith(FILES_SERVICE_BASE_URL):
+                file_iter = get_file_from_files_service(filename)
+                if file_iter:
+                    return b"".join(file_iter), filename
+            else:
+                response = requests.get(file_path, timeout=60)
+                if response.ok:
+                    return response.content, filename
+        except Exception as e:
+            print(f"Error downloading file {file_path}: {str(e)}")
+
+        return None, None
+
+    def _attach_file(self, entity: str, entity_id: str, file_path: str) -> Dict:
+        file_bytes, filename = self._download_file_bytes(file_path)
+        if not file_bytes or not filename:
+            return {"error": "Missing file bytes for attachment"}
+
+        if len(file_bytes) > 10 * 1024 * 1024:
+            return {"error": "Attachment exceeds 10MB limit"}
+
+        content_type, _ = mimetypes.guess_type(filename)
+        if not content_type:
+            content_type = "application/octet-stream"
+
+        url = f"{self.base_url}/{entity}/{entity_id}/attachment"
+        params = {"organization_id": self.org_id}
+        headers = {"Authorization": f"Zoho-oauthtoken {self.access_token}"}
+        files = {"attachment": (filename, file_bytes, content_type)}
+        try:
+            response = requests.post(url, headers=headers, params=params, files=files)
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {"raw": response.text}
+            payload["status_code"] = response.status_code
+            return payload
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _is_attachment_success(self, attachment_result: Optional[Dict]) -> bool:
+        if not attachment_result or not isinstance(attachment_result, dict):
+            return False
+        if attachment_result.get("error"):
+            return False
+        code = attachment_result.get("code")
+        if code is not None:
+            return code == 0
+        status = attachment_result.get("status_code")
+        if status is not None:
+            return 200 <= int(status) < 300
+        return False
+
     async def update_invoice_by_id(self, db: AsyncSession, invoice_id: int):
         stmt = (
             update(Invoice)
@@ -415,7 +516,10 @@ class ZohoClient:
                 )
                 if not vendor_id:
                     summary["failed"] += 1
-                    summary["errors"].append(f"Vendor lookup failed for {vendor_name}")
+                    error_detail = self._last_vendor_error or {}
+                    summary["errors"].append(
+                        f"Vendor lookup failed for {vendor_name}: {error_detail}"
+                    )
                     continue
 
                 bill_payload = {
@@ -441,8 +545,30 @@ class ZohoClient:
 
             if isinstance(result, dict) and result.get("code") == 0:
                 summary["success"] += 1
+                attachment_result = None
+                file_path = invoice.get("file_path")
+                if file_path:
+                    if invoice_type == "sales":
+                        inv_id = (result.get("invoice") or {}).get("invoice_id")
+                        if inv_id:
+                            attachment_result = self._attach_file("invoices", inv_id, file_path)
+                    else:
+                        bill_id = (result.get("bill") or {}).get("bill_id")
+                        if bill_id:
+                            attachment_result = self._attach_file("bills", bill_id, file_path)
+                else:
+                    attachment_result = {"error": "Missing file_path on invoice"}
+
+                if not self._is_attachment_success(attachment_result):
+                    summary["errors"].append(
+                        f"Attachment failed for invoice {invoice_id}: {attachment_result}"
+                    )
                 summary["details"].append(
-                    {"invoice_id": invoice_id, "status": "success"}
+                    {
+                        "invoice_id": invoice_id,
+                        "status": "success",
+                        "attachment": attachment_result,
+                    }
                 )
                 if invoice_id is not None:
                     await self.update_invoice_by_id(db, invoice_id)

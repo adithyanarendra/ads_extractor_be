@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.inspection import inspect as sa_inspect
 
@@ -592,6 +592,16 @@ async def delete_invoice(db, owner_id, invoice_id):
 
     await db.commit()
     return True
+
+
+async def has_credit_note(db, owner_id, invoice_id) -> bool:
+    res = await db.execute(
+        select(func.count(models.SalesTaxCreditNote.id)).where(
+            models.SalesTaxCreditNote.owner_id == owner_id,
+            models.SalesTaxCreditNote.reference_invoice_id == invoice_id,
+        )
+    )
+    return (res.scalar() or 0) > 0
 
 
 async def record_payment(db, owner_id, invoice_id, payload: schemas.SalesPaymentCreate):

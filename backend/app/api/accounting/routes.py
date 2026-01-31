@@ -385,6 +385,7 @@ async def push_invoices(
         invoice["tax_amount"] = db_inv.tax_amount
         invoice["before_tax_amount"] = db_inv.before_tax_amount
         invoice["line_items"] = db_inv.line_items
+        invoice["file_path"] = db_inv.file_path
 
     result = await client.push_multiple_invoices(payload, db)
 
