@@ -68,6 +68,7 @@ async def update_invoice_after_processing(
     invoice_id: int,
     parsed_fields: Dict[str, Optional[str]],
     file_url: str,
+    extraction_status: str = "success",
 ):
     stmt = select(invoices_models.Invoice).where(
         invoices_models.Invoice.id == invoice_id
@@ -94,7 +95,7 @@ async def update_invoice_after_processing(
     invoice.file_hash = parsed_fields.get("file_hash")
     invoice.is_duplicate = parsed_fields.get("is_duplicate")
     invoice.is_processing = False
-    invoice.extraction_status = "success"
+    invoice.extraction_status = extraction_status
 
     raw_line_items = parsed_fields.get("line_items")
 
@@ -149,7 +150,7 @@ async def mark_invoice_failed(
         return None
     
     invoice.is_valid = False
-    invoice.extraction_status = "invalid"
+    invoice.extraction_status = "failed"
     invoice.is_processing = False
     if file_path:
         invoice.file_path = file_path
@@ -378,7 +379,9 @@ async def list_invoices_to_review_by_owner(db: AsyncSession, owner_id: int):
     stmt = select(invoices_models.Invoice.id, invoices_models.Invoice.file_path).where(
         invoices_models.Invoice.owner_id == owner_id,
         invoices_models.Invoice.reviewed == False,
-        invoices_models.Invoice.extraction_status == "success",
+        invoices_models.Invoice.extraction_status.in_(
+            ["success", "missing_number"]
+        ),
         invoices_models.Invoice.is_valid == True,
         Invoice.is_deleted == False,
         Invoice.source_sales_invoice_id.is_(None),
@@ -447,6 +450,49 @@ async def update_invoice_review(
     await db.commit()
     await db.refresh(invoice)
     return invoice
+
+
+async def mark_missing_invoice_number_kept(
+    db: AsyncSession, invoice_id: int, owner_id: int
+):
+    invoice = await get_invoice_by_id_and_owner(db, invoice_id, owner_id)
+    if not invoice:
+        return None
+
+    if invoice.source_sales_invoice_id is not None:
+        return None
+
+    if invoice.is_valid is False or invoice.is_deleted:
+        return None
+
+    if invoice.extraction_status not in {"missing_invoice_number", "missing_number"}:
+        return invoice
+
+    invoice.extraction_status = "success"
+    await db.commit()
+    await db.refresh(invoice)
+    return invoice
+
+
+async def flag_missing_invoice_numbers_for_owner(
+    db: AsyncSession, owner_id: int
+):
+    stmt = (
+        update(invoices_models.Invoice)
+        .where(
+            invoices_models.Invoice.owner_id == owner_id,
+            invoices_models.Invoice.is_deleted == False,
+            invoices_models.Invoice.is_valid == True,
+            invoices_models.Invoice.is_processing == False,
+            invoices_models.Invoice.invoice_number.is_(None),
+            invoices_models.Invoice.extraction_status == "success",
+        )
+        .values(extraction_status="missing_number")
+        .execution_options(synchronize_session=False)
+    )
+    result = await db.execute(stmt)
+    await db.commit()
+    return result.rowcount or 0
 
 
 async def set_invoice_coa(
@@ -578,17 +624,34 @@ async def run_invoice_extraction(
         invoice = await get_invoice_by_id(db, invoice_id)
 
         if invoice and invoice.is_valid is False:
+            invoice.is_processing = False
+            await db.commit()
             print(f"Invoice {invoice_id} is invalid. Skipping extraction.")
             return
 
         try:
-            print("processing invoice")
+            print(f"🔄 [Invoice {invoice_id}] Starting extraction...")
             parsed_fields = await asyncio.get_event_loop().run_in_executor(
                 None, process_invoice, content, ext, invoice_type
             )
             parsed_fields["type"] = invoice_type
             parsed_fields["file_hash"] = file_hash
             parsed_fields["is_duplicate"] = is_duplicate
+
+            has_invoice_number = bool(parsed_fields.get("invoice_number"))
+            if not has_invoice_number:
+                print(
+                    f"⚠️ [Invoice {invoice_id}] Missing invoice number - saving status"
+                )
+                await update_invoice_after_processing(
+                    db,
+                    invoice_id,
+                    parsed_fields,
+                    file_url,
+                    extraction_status="missing_number",
+                )
+                print(f"✅ [Invoice {invoice_id}] Saved: status=missing_number")
+                return
 
             field_values = [
                 parsed_fields.get("vendor_name"),
@@ -607,24 +670,55 @@ async def run_invoice_extraction(
                 invoice.extraction_status = "invalid_document"
                 invoice.is_processing = False
                 await db.commit()
+                print(f"❌ [Invoice {invoice_id}] Invalid document.")
                 return
-            
+
             all_null = all(v in [None, ""] for v in field_values)
 
             if all_null:
                 await mark_invoice_failed(db, invoice_id, file_url)
-                print(f"⚠️ Invoice {invoice_id} extraction failed — all fields empty.")
+                print(
+                    f"❌ [Invoice {invoice_id}] All fields empty — marked failed."
+                )
                 return
-            
-            await update_invoice_after_processing(
-                db, invoice_id, parsed_fields, file_url
+
+            extraction_status = (
+                "missing_number"
+                if doc_type == "missing_invoice_number"
+                else "success"
             )
 
-            print(f"✅ Invoice {invoice_id} extraction completed successfully.")
+            await update_invoice_after_processing(
+                db,
+                invoice_id,
+                parsed_fields,
+                file_url,
+                extraction_status=extraction_status,
+            )
+
+            if doc_type == "missing_invoice_number":
+                print(
+                    f"⚠️ [Invoice {invoice_id}] Missing invoice number — awaiting user decision."
+                )
+            else:
+                print(f"✅ [Invoice {invoice_id}] Extraction completed successfully.")
 
         except Exception as e:
-            print(f"❌ Background extraction failed for invoice {invoice_id}: {e}")
+            print(f"❌ [Invoice {invoice_id}] Extraction failed: {e}")
             await mark_invoice_failed(db, invoice_id, file_url)
+        finally:
+            try:
+                latest = await get_invoice_by_id(db, invoice_id)
+                if latest and latest.is_processing:
+                    latest.is_processing = False
+                    if not latest.extraction_status:
+                        latest.extraction_status = "failed"
+                    await db.commit()
+                    print(
+                        f"✅ [Invoice {invoice_id}] Updated. is_processing=False, status={latest.extraction_status}"
+                    )
+            except Exception as e:
+                print(f"⚠️ [Invoice {invoice_id}] Failed to finalize status: {e}")
 
 async def get_invoice_analytics(db: AsyncSession, owner_id: int):
     result = await db.execute(
@@ -1440,6 +1534,9 @@ def classify_document(parsed_fields: dict) -> str:
     - invalid
     """
 
+    if not parsed_fields:
+        return "invalid"
+
     invoice_number = parsed_fields.get("invoice_number")
     has_tax_note = parsed_fields.get("has_tax_note")
     tax_note_type = parsed_fields.get("tax_note_type")  
@@ -1450,4 +1547,4 @@ def classify_document(parsed_fields: dict) -> str:
     if invoice_number:
         return "invoice"
 
-    return "invalid"
+    return "missing_invoice_number"

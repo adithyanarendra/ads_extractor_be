@@ -35,3 +35,12 @@ class ApproveRegistrationRequest(BaseModel):
 
 class RejectRegistrationRequest(BaseModel):
     reason: str
+
+
+class RegistrationDownloadFile(BaseModel):
+    doc_id: int
+    filename: str
+
+
+class RegistrationDownloadRequest(BaseModel):
+    files: List[RegistrationDownloadFile]

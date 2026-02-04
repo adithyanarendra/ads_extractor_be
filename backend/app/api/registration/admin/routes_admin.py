@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.auth import get_current_user
@@ -61,3 +62,30 @@ async def reject_registration(
         user.id,
     )
     return {"ok": True}
+
+
+@router.post("/{registration_id}/download-zip")
+async def download_registration_zip(
+    registration_id: int,
+    payload: schemas_admin.RegistrationDownloadRequest,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    ensure_sales_access(user)
+    try:
+        zip_buffer, folder_name = await crud_admin.generate_registration_docs_zip(
+            db,
+            registration_id,
+            [f.model_dump() for f in payload.files],
+        )
+        zip_size = zip_buffer.getbuffer().nbytes
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{folder_name}.zip"',
+                "Content-Length": str(zip_size),
+            },
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))

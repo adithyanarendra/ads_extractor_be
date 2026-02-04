@@ -141,6 +141,15 @@ You are a highly precise AI specialized in **UAE tax invoices**. Your goal is to
 - `invoice_number`: the unique invoice identifier.
 - It can contain text sometimes, make sure you capture that too.
 - Possible labels: "Inv", "INV#", "Invoice", "Company Invoice Number", and so on.
+- 🚨 **DO NOT EXTRACT** any of the following as invoice numbers. If a document only shows these, return `null`:
+  - Folio No / Folio #
+  - Room No / Room #
+  - Reservation No / Reservation #
+  - Confirmation No / Confirmation #
+  - Guest No / Guest #
+  - Check # / Receipt No
+  - Order No / Booking No
+- ✅ **ONLY** treat numbers as invoice numbers when the label clearly says "Invoice", "INV", or "Invoice No".
 - **IMPORTANT for thermal/faded bills**: if the invoice number is faint, partially visible, or unclear, do your best to salvage the readable portion:
   - Extract any digits you CAN read, even if incomplete (e.g., "123" from "INV-1234").
   - Mark it as best-effort by prefixing with `~` (e.g., `~123` or `~INV-12`).
@@ -282,9 +291,49 @@ Return **only one valid JSON object** exactly as below:
                 if key in fields:
                     result[key] = fields[key]
             result["invoice_date"] = normalize_date(result.get("invoice_date"))
-            result["before_tax_amount"] = to_two_decimals(clean_amount(result.get("before_tax_amount")))
-            result["tax_amount"]        = to_two_decimals(clean_amount(result.get("tax_amount")))
-            result["total"]             = to_two_decimals(clean_amount(result.get("total")))
+            result["before_tax_amount"] = to_two_decimals(
+                clean_amount(result.get("before_tax_amount"))
+            )
+            result["tax_amount"] = to_two_decimals(clean_amount(result.get("tax_amount")))
+            result["total"] = to_two_decimals(clean_amount(result.get("total")))
+            inv_no = result.get("invoice_number")
+            other_text = result.get("other_text") or ""
+            if inv_no:
+                lower_inv = str(inv_no).lower()
+                if any(
+                    key in lower_inv
+                    for key in [
+                        "folio",
+                        "room",
+                        "reservation",
+                        "confirmation",
+                        "guest",
+                        "check",
+                        "receipt",
+                        "order",
+                        "booking",
+                    ]
+                ):
+                    result["invoice_number"] = None
+                else:
+                    pattern_parts = [
+                        r"folio\\s*(?:no|number|#)?",
+                        r"room\\s*(?:no|number|#)?",
+                        r"reservation\\s*(?:no|number|#)?",
+                        r"confirmation\\s*(?:no|number|#)?",
+                        r"guest\\s*(?:no|number|#)?",
+                        r"check\\s*(?:#|no|number)?",
+                        r"receipt\\s*(?:no|number|#)?",
+                        r"order\\s*(?:no|number|#)?",
+                        r"booking\\s*(?:no|number|#)?",
+                    ]
+                    inv_pattern = re.escape(str(inv_no))
+                    if re.search(
+                        rf"(?:{'|'.join(pattern_parts)})\\s*[:\\-]?\\s*{inv_pattern}",
+                        other_text,
+                        re.IGNORECASE,
+                    ):
+                        result["invoice_number"] = None
 
         except json.JSONDecodeError as e:
             result["error"] = f"Failed to parse GPT response: {str(e)}"

@@ -160,6 +160,108 @@ async def extract_invoice(
     }
 
 
+@router.post("/preview_extraction/{invoice_type}")
+async def preview_extraction(
+    invoice_type: str,
+    file: UploadFile = File(...),
+):
+    if invoice_type not in {"expense", "sales"}:
+        return {"ok": False, "message": "Invalid invoice type"}
+
+    ext = os.path.splitext(file.filename)[1]
+    content = await file.read()
+    parsed_fields = await asyncio.get_event_loop().run_in_executor(
+        None, process_invoice, content, ext, invoice_type
+    )
+    doc_type = classify_document(parsed_fields)
+    needs_confirmation = doc_type == "missing_invoice_number"
+    preview = {
+        "vendor_name": parsed_fields.get("vendor_name"),
+        "invoice_number": parsed_fields.get("invoice_number"),
+        "invoice_date": parsed_fields.get("invoice_date"),
+        "total": parsed_fields.get("total"),
+        "description": parsed_fields.get("description"),
+    }
+
+    return {
+        "ok": True,
+        "needs_confirmation": needs_confirmation,
+        "preview": preview,
+    }
+
+
+@router.post("/extract_confirmed/{invoice_type}")
+async def extract_confirmed(
+    invoice_type: str,
+    file: UploadFile = File(...),
+    file_hash: str = Form(None),
+    is_duplicate: bool = Form(False),
+    allow_missing_number: bool = Form(False),
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if invoice_type not in {"expense", "sales"}:
+        return {"ok": False, "message": "Invalid invoice type"}
+
+    ext = os.path.splitext(file.filename)[1]
+    content = await file.read()
+    parsed_fields = await asyncio.get_event_loop().run_in_executor(
+        None, process_invoice, content, ext, invoice_type
+    )
+    doc_type = classify_document(parsed_fields)
+    if doc_type == "missing_invoice_number" and not allow_missing_number:
+        preview = {
+            "vendor_name": parsed_fields.get("vendor_name"),
+            "invoice_number": parsed_fields.get("invoice_number"),
+            "invoice_date": parsed_fields.get("invoice_date"),
+            "total": parsed_fields.get("total"),
+            "description": parsed_fields.get("description"),
+        }
+        return {
+            "ok": False,
+            "needs_confirmation": True,
+            "preview": preview,
+        }
+
+    safe_name = f"{uuid4().hex}{ext}"
+    placeholder_invoice = await invoices_crud.create_processing_invoice(
+        db=db,
+        owner_id=current_user.effective_user_id,
+        vendor_name=file.filename,
+        invoice_type=invoice_type,
+    )
+
+    if USE_CLOUD_STORAGE:
+        file_url = await asyncio.to_thread(upload_to_r2_bytes, content, safe_name)
+    else:
+        file_url = await asyncio.to_thread(
+            upload_to_files_service_bytes, content, safe_name
+        )
+
+    placeholder_invoice.file_path = file_url
+    await db.commit()
+    await db.refresh(placeholder_invoice)
+
+    asyncio.create_task(
+        invoices_crud.run_invoice_extraction(
+            invoice_id=placeholder_invoice.id,
+            content=content,
+            ext=ext,
+            invoice_type=invoice_type,
+            file_url=file_url,
+            file_hash=file_hash,
+            is_duplicate=is_duplicate,
+        )
+    )
+
+    return {
+        "ok": True,
+        "message": "Upload complete. Extraction started in background.",
+        "invoice_id": placeholder_invoice.id,
+        "file_location": file_url,
+    }
+
+
 @router.post("/request_review")
 async def request_review(
     invoice_id: int,
@@ -225,6 +327,42 @@ async def review_invoice(
         await batches_crud.ensure_future_batches(db, current_user.effective_user_id)
 
     return {"ok": True, "msg": "Invoice review updated", "invoice_id": invoice.id}
+
+
+@router.post("/keep-missing-number/{invoice_id}")
+async def keep_missing_invoice_number(
+    invoice_id: int,
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    invoice = await invoices_crud.mark_missing_invoice_number_kept(
+        db, invoice_id, current_user.effective_user_id
+    )
+    if not invoice:
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "msg": "Invoice not found"}
+        )
+
+    return {
+        "ok": True,
+        "msg": "Missing invoice number accepted",
+        "invoice_id": invoice.id,
+    }
+
+
+@router.post("/flag-missing-numbers")
+async def flag_missing_invoice_numbers(
+    current_user: users_models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    count = await invoices_crud.flag_missing_invoice_numbers_for_owner(
+        db, current_user.effective_user_id
+    )
+    return {
+        "ok": True,
+        "msg": "Missing invoice numbers flagged",
+        "updated": count,
+    }
 
 
 @router.get("/archived")
