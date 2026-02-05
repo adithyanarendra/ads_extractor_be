@@ -31,11 +31,79 @@ class UpdateUserDocSchema(BaseModel):
     expiry_date: Optional[datetime] = None
     filing_date: Optional[datetime] = None
     batch_start_date: Optional[datetime] = None
+    company_address: Optional[str] = None
 
     generic_title: Optional[str] = None
     generic_document_number: Optional[str] = None
     generic_action_dates: Optional[List[str]] = None
     generic_parties: Optional[List[str]] = None
+
+    # VAT fields
+    vat_certificate_title: Optional[str] = None
+    vat_issuing_authority: Optional[str] = None
+    vat_tax_registration_number: Optional[str] = None
+    vat_legal_name_arabic: Optional[str] = None
+    vat_legal_name_english: Optional[str] = None
+    vat_registered_address: Optional[str] = None
+    vat_contact_number: Optional[str] = None
+    vat_effective_registration_date: Optional[datetime] = None
+    vat_first_vat_return_period: Optional[str] = None
+    vat_vat_return_due_date: Optional[datetime] = None
+    vat_tax_periods: Optional[str] = None
+    vat_license_holder_name: Optional[str] = None
+    vat_license_issuing_authority: Optional[str] = None
+    vat_license_number: Optional[str] = None
+    vat_date_of_issue: Optional[datetime] = None
+    vat_version_number: Optional[str] = None
+    vat_batch_one: Optional[str] = None
+    vat_batch_two: Optional[str] = None
+    vat_batch_three: Optional[str] = None
+    vat_batch_four: Optional[str] = None
+
+    # CT fields
+    ct_certificate_title: Optional[str] = None
+    ct_issuing_authority: Optional[str] = None
+    ct_trn: Optional[str] = None
+    ct_legal_name_ar: Optional[str] = None
+    ct_legal_name_en: Optional[str] = None
+    ct_registered_address: Optional[str] = None
+    ct_contact_number: Optional[str] = None
+    ct_effective_registration_date: Optional[datetime] = None
+    ct_tax_period: Optional[str] = None
+    ct_first_period_start_date: Optional[datetime] = None
+    ct_first_period_end_date: Optional[datetime] = None
+    ct_first_return_due_date: Optional[datetime] = None
+    ct_license_holder_name: Optional[str] = None
+    ct_license_authority: Optional[str] = None
+    ct_license_number: Optional[str] = None
+    ct_license_issue_date: Optional[datetime] = None
+    ct_version_number: Optional[str] = None
+
+    # Trade License fields
+    tl_license_number: Optional[str] = None
+    tl_membership_number: Optional[str] = None
+    tl_registration_number: Optional[str] = None
+    tl_business_name_ar: Optional[str] = None
+    tl_business_name_en: Optional[str] = None
+    tl_legal_status: Optional[str] = None
+    tl_activities: Optional[str] = None
+    tl_issue_date: Optional[datetime] = None
+    tl_expiry_date: Optional[datetime] = None
+    tl_membership_since: Optional[datetime] = None
+
+    # Passport fields
+    passport_number: Optional[str] = None
+    passport_name: Optional[str] = None
+    passport_date_of_birth: Optional[datetime] = None
+    passport_issue_date: Optional[datetime] = None
+    passport_expiry_date: Optional[datetime] = None
+
+    # Emirates ID fields
+    emirates_id_number: Optional[str] = None
+    emirates_id_name: Optional[str] = None
+    emirates_id_date_of_birth: Optional[datetime] = None
+    emirates_id_issue_date: Optional[datetime] = None
+    emirates_id_expiry_date: Optional[datetime] = None
 
     class Config:
         orm_mode = True
