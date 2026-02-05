@@ -23,6 +23,7 @@ from app.api.quickbooks.client import (
     delete_qb_tokens,
     ENVIRONMENT,
 )
+from app.api.quickbooks.attachments import attach_file_to_qb
 from app.core.database import async_session_maker
 from app.api.batches import crud as batches_crud
 from app.core.auth import decode_token
@@ -337,6 +338,21 @@ async def push_single_invoice_core(
             raise ValueError("QuickBooks did not return Bill ID")
 
         await update_invoice_qb_id(db, invoice_id, int(qb_bill_id))
+
+        if invoice.file_path:
+            attachment_result = await attach_file_to_qb(
+                access_token=access_token,
+                base_url=base_url,
+                realm_id=realm_id,
+                entity_type="Bill",
+                entity_id=qb_bill_id,
+                file_path=invoice.file_path,
+                timeout=QB_TIMEOUT,
+            )
+            if attachment_result.get("error"):
+                print(
+                    f"QuickBooks attachment failed for invoice {invoice_id}: {attachment_result}"
+                )
 
         from app.api.invoices.crud import mark_invoice_as_published
         await mark_invoice_as_published(db, invoice_id)

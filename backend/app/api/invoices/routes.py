@@ -41,6 +41,8 @@ from ...utils.files_service import (
     upload_to_files_service_bytes,
     get_file_from_files_service,
 )
+from app.api.quickbooks.client import get_valid_access_token, qb_base_url
+from app.api.quickbooks.attachments import attach_file_to_qb
 
 USE_CLOUD_STORAGE = True
 
@@ -292,13 +294,6 @@ async def review_invoice(
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if not (
-        getattr(current_user, "jwt_company_role", None) == "admin"
-        or getattr(current_user, "jwt_is_accountant", False)
-        or getattr(current_user, "is_admin", False)
-        or getattr(current_user, "is_super_admin", False)
-    ):
-        raise HTTPException(status_code=403, detail="Access denied")
     invoice = await invoices_crud.update_invoice_review(
         db,
         payload.invoice_id,
@@ -760,6 +755,22 @@ async def push_invoice(
 
     invoice.qb_invoice_id = qb_response.get("Invoice", {}).get("Id")
     await db.commit()
+
+    if invoice.qb_invoice_id and invoice.file_path:
+        access_token, realm_id = await get_valid_access_token(db)
+        if access_token and realm_id:
+            attachment_result = await attach_file_to_qb(
+                access_token=access_token,
+                base_url=qb_base_url(),
+                realm_id=realm_id,
+                entity_type="Invoice",
+                entity_id=invoice.qb_invoice_id,
+                file_path=invoice.file_path,
+            )
+            if attachment_result.get("error"):
+                print(
+                    f"QuickBooks attachment failed for invoice {invoice.id}: {attachment_result}"
+                )
 
     return {
         "ok": True,
