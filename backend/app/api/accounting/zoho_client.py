@@ -369,21 +369,35 @@ class ZohoClient:
                     d, m, y = parts
                     invoice_date = f"{y}-{m}-{d}"
             
+            def _post(payload: Dict) -> Dict:
+                params = {"organization_id": self.org_id}
+                print(f"Creating sales invoice with payload: {payload}")
+                response = requests.post(
+                    url, headers=self.headers, params=params, json=payload
+                )
+                result = response.json()
+                print(f"Zoho create_sales_invoice response: {result}")
+                return result
+
             payload = {
                 "customer_id": invoice_data["customer_id"],
                 "date": invoice_date,
                 "line_items": self._build_line_items(invoice_data),
             }
-            
-            params = {"organization_id": self.org_id}
-            
-            print(f"Creating sales invoice with payload: {payload}")
-            
-            response = requests.post(url, headers=self.headers, params=params, json=payload)
-            result = response.json()
-            
-            print(f"Zoho create_sales_invoice response: {result}")
-            
+
+            result = _post(payload)
+
+            # If Zoho requires manual invoice number, retry with invoice_number.
+            if (
+                isinstance(result, dict)
+                and result.get("code") == 4018
+                and "invoice number field is blank" in (result.get("message") or "").lower()
+            ):
+                invoice_number = invoice_data.get("invoice_number")
+                if invoice_number:
+                    payload_with_number = {**payload, "invoice_number": invoice_number}
+                    return _post(payload_with_number)
+
             return result
             
         except Exception as e:

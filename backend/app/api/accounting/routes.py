@@ -381,11 +381,24 @@ async def push_invoices(
         db_inv = invoice_map.get(inv_id)
         if not db_inv:
             continue
+        invoice["invoice_number"] = db_inv.invoice_number
         invoice["trn_vat_number"] = db_inv.trn_vat_number
         invoice["tax_amount"] = db_inv.tax_amount
         invoice["before_tax_amount"] = db_inv.before_tax_amount
         invoice["line_items"] = db_inv.line_items
         invoice["file_path"] = db_inv.file_path
+
+    missing_invoice_numbers = [
+        inv.id for inv in invoices_from_db if not (inv.invoice_number or "").strip()
+    ]
+    if missing_invoice_numbers:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Selected invoices are missing Invoice Number. "
+                f"Please update and try again. Missing: {missing_invoice_numbers}"
+            ),
+        )
 
     result = await client.push_multiple_invoices(payload, db)
 
