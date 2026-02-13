@@ -478,11 +478,23 @@ async def edit_invoice(
     current_user: users_models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if not (
+    is_privileged = (
         getattr(current_user, "jwt_company_role", None) == "admin"
         or getattr(current_user, "jwt_is_accountant", False)
         or getattr(current_user, "is_admin", False)
         or getattr(current_user, "is_super_admin", False)
+    )
+    invoice = await invoices_crud.get_invoice_by_id_and_owner(
+        db, invoice_id, current_user.effective_user_id
+    )
+    if not invoice:
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "msg": "Invoice not found"}
+        )
+    if (
+        invoice.reviewed
+        and invoice.type in {"expense", "sales"}
+        and not is_privileged
     ):
         raise HTTPException(status_code=403, detail="Access denied")
     invoice = await invoices_crud.edit_invoice(
@@ -757,7 +769,9 @@ async def push_invoice(
     await db.commit()
 
     if invoice.qb_invoice_id and invoice.file_path:
-        access_token, realm_id = await get_valid_access_token(db)
+        access_token, realm_id = await get_valid_access_token(
+            db, current_user.effective_user_id
+        )
         if access_token and realm_id:
             attachment_result = await attach_file_to_qb(
                 access_token=access_token,

@@ -124,8 +124,10 @@ async def quickbooks_status(
     db: AsyncSession = Depends(get_db),
     current_user: users_models.User = Depends(require_active_subscription),
 ):
-    access_token, realm_id = await get_valid_access_token(db)
-    return {"connected": bool(access_token), "realm_id": realm_id}
+    org_id = current_user.effective_user_id
+    access_token, realm_id = await get_valid_access_token(db, org_id)
+    connected = bool(access_token)
+    return {"connected": connected, "realm_id": realm_id if connected else None}
 
 @router.get("/connect")
 async def connect_quickbooks(request: Request):
@@ -160,22 +162,26 @@ async def quickbooks_callback(request: Request, db: AsyncSession = Depends(get_d
 
     payload = decoded["payload"]
     
-    user_id = payload.get("uid") 
+    user_id = payload.get("uid")
+    acting_user_id = payload.get("acting_user_id")
     if not user_id:
         return RedirectResponse(url=f"{redirect_url}&error=no_user_id")
+
+    org_id = acting_user_id or user_id
 
     await asyncio.to_thread(auth_client.get_bearer_token, code, realm_id)
 
     await save_qb_tokens(
         db=db,
+        org_id=org_id,
         access_token=auth_client.access_token,
         refresh_token=auth_client.refresh_token,
         realm_id=realm_id,
         expires_in=auth_client.expires_in,
     )
 
-    await mark_qb_connected(db, user_id)
-    await reset_invoices_on_software_switch(db, user_id, 'qb')
+    await mark_qb_connected(db, org_id)
+    await reset_invoices_on_software_switch(db, org_id, "qb")
 
     return RedirectResponse(url=f"{redirect_url}&qb_connected=true")
 
@@ -185,7 +191,9 @@ async def check_auth(
     db: AsyncSession = Depends(get_db),
     current_user: users_models.User = Depends(require_active_subscription),
 ):
-    access_token, _ = await get_valid_access_token(db)
+    access_token, _ = await get_valid_access_token(
+        db, current_user.effective_user_id
+    )
     return {"authorized": bool(access_token)}
 
 
@@ -198,7 +206,9 @@ async def fetch_chart_of_accounts(
     if now - _COA_CACHE["ts"] < CACHE_TTL:
         return {"accounts": _COA_CACHE["accounts"]}
 
-    access_token, realm_id = await get_valid_access_token(db)
+    access_token, realm_id = await get_valid_access_token(
+        db, current_user.effective_user_id
+    )
     if not access_token or not realm_id:
         raise HTTPException(status_code=401, detail="QuickBooks not connected")
 
@@ -236,9 +246,12 @@ async def disconnect_quickbooks(
     db: AsyncSession = Depends(get_db),
     current_user: users_models.User = Depends(require_active_subscription),
 ):
+    org_id = current_user.effective_user_id
+    deleted = await delete_qb_tokens(db, org_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="QuickBooks not connected")
 
-    await mark_qb_disconnected(db, current_user.id)
-    await delete_qb_tokens(db)
+    await mark_qb_disconnected(db, org_id)
 
     _COA_CACHE["ts"] = 0
     _COA_CACHE["accounts"] = []
@@ -381,7 +394,8 @@ async def push_bill_to_quickbooks(
     if chart_of_account_name in AP_NAMES:
         raise HTTPException(status_code=400, detail="Invalid Chart of Account")
 
-    access_token, realm_id = await get_valid_access_token(db)
+    org_id = current_user.effective_user_id
+    access_token, realm_id = await get_valid_access_token(db, org_id)
     if not access_token or not realm_id:
         raise HTTPException(status_code=401, detail="QuickBooks not connected")
 
@@ -406,7 +420,8 @@ async def push_multiple_invoices(
     if not invoice_ids or not isinstance(invoice_ids, list):
         raise HTTPException(status_code=400, detail="invoice_ids must be a valid list")
 
-    access_token, realm_id = await get_valid_access_token(db)
+    org_id = current_user.effective_user_id
+    access_token, realm_id = await get_valid_access_token(db, org_id)
     if not access_token or not realm_id:
         raise HTTPException(status_code=401, detail="QuickBooks not connected")
 
@@ -465,7 +480,8 @@ async def push_batch_to_quickbooks(
     import asyncio
     from app.core.database import async_session_maker
 
-    res = await get_invoice_ids_for_batch(db, batch_id, owner_id=current_user.id)
+    owner_id = current_user.effective_user_id
+    res = await get_invoice_ids_for_batch(db, batch_id, owner_id=owner_id)
     if not res.get("ok"):
         raise HTTPException(status_code=404, detail=res.get("message"))
 
@@ -479,7 +495,7 @@ async def push_batch_to_quickbooks(
             "ok": True,
         }
 
-    access_token, realm_id = await get_valid_access_token(db)
+    access_token, realm_id = await get_valid_access_token(db, owner_id)
     if not access_token or not realm_id:
         raise HTTPException(status_code=401, detail="QuickBooks not connected")
 
@@ -539,14 +555,15 @@ async def get_quickbooks_batch_status(
     Provides a summary of unpublished invoices in a batch for the 
     QuickBooks pre-push confirmation dialog, including COA status.
     """
-    batch_details = await batches_crud.get_invoice_ids_for_batch(db, batch_id, owner_id=current_user.id)
+    owner_id = current_user.effective_user_id
+    batch_details = await batches_crud.get_invoice_ids_for_batch(db, batch_id, owner_id=owner_id)
     if not batch_details:
         raise HTTPException(status_code=404, detail="Batch not found")
 
     invoices_data = await batches_crud.get_invoices_for_qb_batch_status(
         db, 
         batch_id=batch_id, 
-        owner_id=current_user.id
+        owner_id=owner_id
     )
     
     ready_count = 0

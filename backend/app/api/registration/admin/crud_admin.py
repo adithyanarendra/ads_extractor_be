@@ -1,11 +1,14 @@
 import io
 import asyncio
 import zipfile
+import mimetypes
+from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from app.utils.r2 import get_file_from_r2
 from app.api.registration import models
 from app.api.users import crud as users_crud
+from app.api.user_docs import crud as user_docs_crud
 
 
 async def list_registrations_with_docs(db: AsyncSession):
@@ -37,6 +40,7 @@ async def approve_registration(
     email: str,
     password: str,
     approved_by: int,
+    certificate_file: UploadFile | None = None,
 ):
     reg = await db.get(models.RegistrationUser, registration_id)
     if not reg:
@@ -52,6 +56,71 @@ async def approve_registration(
         name=name,
         created_by=approved_by,
     )
+
+    docs_result = await db.execute(
+        select(models.RegistrationUserDoc).where(
+            models.RegistrationUserDoc.registration_user_id == registration_id
+        )
+    )
+    docs = docs_result.scalars().all()
+
+    for doc in docs:
+        if not doc.file_url:
+            continue
+        key = doc.file_url.split("r2.dev/")[-1]
+        file_obj = await asyncio.to_thread(get_file_from_r2, key)
+        if not file_obj:
+            continue
+        file_bytes = file_obj.read()
+        ext = mimetypes.guess_extension(
+            mimetypes.guess_type(doc.file_url)[0] or ""
+        ) or ""
+        filename = f"{doc.doc_key}{ext}"
+        upload_file = UploadFile(
+            filename=filename,
+            file=io.BytesIO(file_bytes),
+        )
+        result = await user_docs_crud.upload_user_doc(
+            db=db,
+            user_id=user.id,
+            doc_type="auto",
+            file_bytes=file_bytes,
+            file=upload_file,
+        )
+        if result.get("ok"):
+            try:
+                asyncio.create_task(
+                    user_docs_crud.process_doc_metadata(
+                        result["data"]["id"], file_bytes, "auto"
+                    )
+                )
+            except Exception:
+                pass
+
+    if certificate_file:
+        file_bytes = await certificate_file.read()
+        certificate_file.file.seek(0)
+        doc_type = (
+            "ct_certificate"
+            if reg.registration_type == models.RegistrationType.CT
+            else "vat_certificate"
+        )
+        result = await user_docs_crud.upload_user_doc(
+            db=db,
+            user_id=user.id,
+            doc_type=doc_type,
+            file_bytes=file_bytes,
+            file=certificate_file,
+        )
+        if result.get("ok"):
+            try:
+                asyncio.create_task(
+                    user_docs_crud.process_doc_metadata(
+                        result["data"]["id"], file_bytes, doc_type
+                    )
+                )
+            except Exception:
+                pass
 
     reg.status = models.RegistrationStatus.APPROVED
     await db.commit()

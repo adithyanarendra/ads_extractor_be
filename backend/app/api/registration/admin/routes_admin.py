@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import EmailStr
 from app.core.database import get_db
 from app.core.auth import get_current_user
 from . import schemas_admin, crud_admin
@@ -25,7 +26,10 @@ async def list_registrations(
 @router.post("/{registration_id}/approve")
 async def approve_registration(
     registration_id: int,
-    payload: schemas_admin.ApproveRegistrationRequest,
+    name: str = Form(...),
+    email: EmailStr = Form(...),
+    password: str = Form(...),
+    certificate_file: UploadFile | None = File(None),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
@@ -34,10 +38,11 @@ async def approve_registration(
         return await crud_admin.approve_registration(
             db,
             registration_id,
-            payload.name,
-            payload.email,
-            payload.password,
+            name,
+            email,
+            password,
             user.id,
+            certificate_file,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

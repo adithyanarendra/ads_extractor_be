@@ -1,0 +1,17 @@
+from enum import Enum
+
+CHANNEL_STATUS_CREATED = "created"
+CHANNEL_STATUS_ACTIVE = "active"
+CHANNEL_STATUS_CLOSED = "closed"
+CHANNEL_STATUS_EXPIRED = "expired"
+
+MESSAGE_TEXT = "text"
+MESSAGE_FILE = "file"
+MESSAGE_FORM = "form"
+MESSAGE_FORM_RESPONSE = "form_response"
+
+SENDER = "sender"
+RECEIVER = "receiver"
+
+MAX_UPLOAD_MB = 10
+PUBLIC_TOKEN_BYTES = 32

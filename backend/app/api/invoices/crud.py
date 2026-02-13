@@ -1100,7 +1100,7 @@ async def get_qb_expense_analytics(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
 ):
-    access_token, realm_id = await get_valid_access_token(db)
+    access_token, realm_id = await get_valid_access_token(db, owner_id)
     if not access_token or not realm_id:
         return {
             "range_days": None if (from_date and to_date) else days,
@@ -1332,7 +1332,7 @@ async def get_qb_sales_analytics(
     """
     Sales analytics from QuickBooks Invoices with custom date support
     """
-    access_token, realm_id = await get_valid_access_token(db)
+    access_token, realm_id = await get_valid_access_token(db, owner_id)
     if not access_token or not realm_id:
         return {
             "range_days": None if (from_date and to_date) else days,

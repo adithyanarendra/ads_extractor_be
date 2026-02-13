@@ -39,6 +39,8 @@ from .api.suppliers.routes import router as suppliers_router
 from .api.payments.routes import router as payments_router
 from .api.registration.routes import router as registration_router
 from .api.registration.admin.routes_admin import router as registration_admin_router
+from .api.channels.ws import router as channels_ws_router
+from .api.channels.http import router as channels_http_router
 
 
 app = FastAPI(title="FastAPI Invoice OCR")
@@ -92,6 +94,8 @@ app.include_router(
 )
 app.include_router(registration_router)
 app.include_router(registration_admin_router)
+app.include_router(channels_ws_router)
+app.include_router(channels_http_router)
 
 
 @app.get("/")
