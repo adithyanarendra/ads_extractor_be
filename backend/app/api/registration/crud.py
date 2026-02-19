@@ -30,7 +30,7 @@ async def create_registration(
 async def upload_documents(
     db: AsyncSession,
     registration_id: int,
-    files: Dict[str, Tuple[bytes, str]],
+    files: Dict[str, List[Tuple[bytes, str]]],
 ) -> List[Dict[str, str]]:
     reg = await db.get(models.RegistrationUser, registration_id)
     if not reg:
@@ -43,35 +43,15 @@ async def upload_documents(
         raise ValueError("Registration is not editable")
 
     created_docs = []
-    for doc_key, (file_bytes, original_name) in files.items():
-        existing_doc = await db.scalar(
-            select(models.RegistrationUserDoc).where(
-                models.RegistrationUserDoc.registration_user_id == registration_id,
-                models.RegistrationUserDoc.doc_key == doc_key,
+    for doc_key, file_entries in files.items():
+        for file_bytes, original_name in file_entries:
+            _, ext = os.path.splitext(original_name or "")
+            safe_ext = ext.lower() if ext else ""
+            filename = (
+                f"registration/{registration_id}/{doc_key}/{uuid.uuid4()}{safe_ext}"
             )
-        )
-        _, ext = os.path.splitext(original_name or "")
-        safe_ext = ext.lower() if ext else ""
-        filename = (
-            f"registration/{registration_id}/{doc_key}/{uuid.uuid4()}{safe_ext}"
-        )
-        url = upload_to_r2_bytes(file_bytes, filename)
+            url = upload_to_r2_bytes(file_bytes, filename)
 
-        if existing_doc:
-            if "r2.dev/" in existing_doc.file_url:
-                old_key = existing_doc.file_url.split("r2.dev/")[-1]
-                delete_from_r2(old_key)
-            existing_doc.file_url = url
-            existing_doc.uploaded_at = func.now()
-            await db.flush()
-            created_docs.append(
-                {
-                    "id": existing_doc.id,
-                    "doc_key": existing_doc.doc_key,
-                    "file_url": existing_doc.file_url,
-                }
-            )
-        else:
             doc = models.RegistrationUserDoc(
                 registration_user_id=registration_id,
                 doc_key=doc_key,

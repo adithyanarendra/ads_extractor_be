@@ -47,15 +47,21 @@ async def upload_documents(
     db: AsyncSession = Depends(get_db),
 ):
     form = await request.form()
-    files = {key: value for key, value in form.items() if hasattr(value, "filename")}
+    files = {}
+    for key, value in form.multi_items():
+        if not hasattr(value, "filename"):
+            continue
+        files.setdefault(key, []).append(value)
 
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
-    file_data = {
-        key: (await value.read(), value.filename or "")
-        for key, value in files.items()
-    }
+    file_data = {}
+    for key, items in files.items():
+        entries = []
+        for item in items:
+            entries.append((await item.read(), item.filename or ""))
+        file_data[key] = entries
 
     try:
         docs = await crud.upload_documents(db, registration_id, file_data)
